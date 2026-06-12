@@ -1015,7 +1015,7 @@ function HomeContent() {
                              ${
                                msg.role === "catherine"
                                  ? "text-[var(--text-main)] p-5 bg-[var(--bg-surface)] rounded-2xl rounded-tl-sm border border-[var(--border-color)] shadow-md"
-                                 : "text-white py-3 px-5 bg-[var(--text-main)] rounded-2xl rounded-tr-sm shadow-md"
+                                 : "text-[var(--bg-main)] py-3 px-5 bg-[var(--text-main)] rounded-2xl rounded-tr-sm shadow-md"
                              }`}
                   >
                     {msg.role === "catherine" ? (
@@ -1061,7 +1061,7 @@ function HomeContent() {
                       </span>
                     )}
                     {msg.role === "catherine" && msg.isNew && process.env.NODE_ENV === "development" && (
-                       <span className="text-[9px] text-white/20 font-mono tracking-widest uppercase flex gap-2">
+                       <span className="text-[9px] text-[var(--text-muted)] opacity-50 font-mono tracking-widest uppercase flex gap-2">
                           <span title="STT Latency">STT: {(metrics.stt).toFixed(0)}ms</span>
                           | <span title="n8n Stream Latency">N8N: {(metrics.n8n).toFixed(0)}ms</span>
                           | <span title="Tool Exec Latency">TOOL: {(metrics.tool).toFixed(0)}ms</span>
@@ -1231,7 +1231,7 @@ function HomeContent() {
                     ${
                       state === "listening"
                         ? "bg-[#ef4444] shadow-[0_0_30px_rgba(239,68,68,0.5)] text-white scale-110"
-                        : "bg-[var(--accent)] hover:scale-105 active:scale-95 text-white"
+                        : "bg-[var(--accent)] hover:scale-105 active:scale-95 text-[#030303]"
                     } ${hapticPulse ? "scale-90 brightness-150" : ""}`}
             >
               {state === "idle" || state === "speaking" ? (
