@@ -600,7 +600,7 @@ function HomeContent() {
   };
 
   const toggleRecording = async () => {
-    if (isHandsFree) return; // Prevent manual override while hands free is active
+    if (settings.handsFree) return; // Prevent manual override while hands free is active
 
     if (state === "listening") {
       recognitionRef.current?.stop();
