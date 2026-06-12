@@ -1,0 +1,6 @@
+{
+  "name": "Catherine Voice Interface",
+  "description": "A sleek, futuristic voice agent interface connecting to a webhook and ElevenLabs.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
