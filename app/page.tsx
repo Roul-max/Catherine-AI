@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, memo } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { loadMessages, saveMessage } from "../src/lib/supabase";
+import { loadMessages, saveMessage, deleteMessage, clearConversation, clearAllConversations } from "../src/lib/supabase";
 import {
   Mic,
   Square,
@@ -15,7 +15,17 @@ import {
   Lock,
   Unlock,
   AlertCircle,
-  Activity
+  Activity,
+  Menu,
+  Plus,
+  X,
+  Sliders,
+  MessageSquare,
+  Copy,
+  Check,
+  Search,
+  Moon,
+  Sun
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
@@ -37,7 +47,7 @@ type Message = {
   recalled?: boolean;
 };
 
-type State = "idle" | "listening" | "processing" | "speaking";
+type State = "idle" | "sleeping" | "listening" | "processing" | "speaking";
 
 type Metrics = {
   stt: number;
@@ -45,6 +55,24 @@ type Metrics = {
   tool: number;
   tts: number;
   total: number;
+};
+
+type SettingsConf = {
+  wakeWord: string;
+  voiceId: string;
+  speechRate: number;
+  handsFree: boolean;
+  autoSpeak: boolean;
+  wakeTimeout: number;
+  wakeMode: "beep" | "tts";
+  wakeAcknowledge: string;
+  theme: "dark" | "light";
+};
+
+type ChatSession = {
+  id: string;
+  title: string;
+  updatedAt: number;
 };
 
 export default function Home() {
@@ -62,11 +90,29 @@ function HomeContent() {
   const [volumeLevels, setVolumeLevels] = useState<number[]>(
     Array(10).fill(12),
   );
+
+  const [settings, setSettings] = useState<SettingsConf>({
+    wakeWord: "Catherine",
+    voiceId: process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID || "EXAVITQu4vr4xnSDxMaL",
+    speechRate: 1,
+    handsFree: false,
+    autoSpeak: true,
+    wakeTimeout: 5,
+    wakeMode: "tts",
+    wakeAcknowledge: "Yes?",
+    theme: "dark",
+  });
+  const settingsRef = useRef(settings);
+  
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string>("default");
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [sessionSearch, setSessionSearch] = useState("");
   
   const themeColor = "cyan";
   const visMode = "bars";
-  const voiceId = process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID || "EXAVITQu4vr4xnSDxMaL";
-  const playbackRate = 1;
 
   const [autoScroll, setAutoScroll] = useState(true);
   const [hapticPulse, setHapticPulse] = useState(false);
@@ -94,11 +140,49 @@ function HomeContent() {
     return () => clearInterval(interval);
   }, []);
 
+  // Load settings from local storage
+  useEffect(() => {
+    const savedSettings = localStorage.getItem("catherine-settings");
+    if (savedSettings) {
+      try { setSettings(prev => ({ ...prev, ...JSON.parse(savedSettings) })); } catch(e) {}
+    }
+  }, []);
+
+  // Keep settings ref synced for event listeners
+  useEffect(() => {
+    settingsRef.current = settings;
+    localStorage.setItem("catherine-settings", JSON.stringify(settings));
+  }, [settings]);
+
+  useEffect(() => {
+    if (settings.theme === "light") {
+      document.documentElement.classList.remove("dark");
+    } else {
+      document.documentElement.classList.add("dark");
+    }
+  }, [settings.theme]);
+
+  // Load sessions from local storage
+  useEffect(() => {
+    const storedSessions = localStorage.getItem("catherine-sessions");
+    if (storedSessions) {
+      setSessions(JSON.parse(storedSessions));
+    } else {
+      const initialSession = { id: "default", title: "New Conversation", updatedAt: Date.now() };
+      setSessions([initialSession]);
+      localStorage.setItem("catherine-sessions", JSON.stringify([initialSession]));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (sessions.length > 0) localStorage.setItem("catherine-sessions", JSON.stringify(sessions));
+  }, [sessions]);
+
   // Hydrate memory on mount
   useEffect(() => {
      async function initMemory() {
         try {
-           const history = await loadMessages("current_session");
+           const history = await loadMessages(currentSessionId);
            if (history && history.length > 0) {
               setMessages(history.map((row: any) => ({
                  id: row.id,
@@ -118,7 +202,7 @@ function HomeContent() {
            }
         } catch(e: any) {
            setError("Failed to load memory: " + e.message);
-           const stored = localStorage.getItem("catherine-messages");
+           const stored = localStorage.getItem(`catherine-messages-${currentSessionId}`);
            if (stored) {
               setMessages(JSON.parse(stored));
            } else {
@@ -135,16 +219,16 @@ function HomeContent() {
         }
      }
      initMemory();
-  }, []);
+  }, [currentSessionId]);
 
   // Periodic Auto-Save
   useEffect(() => {
     if (!isLoaded) return;
     const interval = setInterval(() => {
-        localStorage.setItem("catherine-messages", JSON.stringify(messages));
+        localStorage.setItem(`catherine-messages-${currentSessionId}`, JSON.stringify(messages));
     }, 30000);
     return () => clearInterval(interval);
-  }, [isLoaded, messages]);
+  }, [isLoaded, messages, currentSessionId]);
   
   const themeRgbMap = {
     cyan: "220, 240, 255", // Paler, more minimalist icy cyan
@@ -169,6 +253,8 @@ function HomeContent() {
   const microphoneStreamRef = useRef<MediaStream | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const stateRef = useRef<State>("idle");
+  const isRecognizingRef = useRef(false);
+  const listeningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     stateRef.current = state;
@@ -183,6 +269,10 @@ function HomeContent() {
     return () => clearInterval(int);
   }, [state]);
 
+  useEffect(() => {
+    isHandsFreeRef.current = isHandsFree;
+  }, [isHandsFree]);
+
   function stopMicrophone() {
      if (microphoneStreamRef.current) {
         microphoneStreamRef.current.getTracks().forEach(track => track.stop());
@@ -192,26 +282,41 @@ function HomeContent() {
 
   function stopAudio() {
     if (audioRef.current) {
+       audioRef.current.onended = null;
        audioRef.current.pause();
        audioRef.current.currentTime = 0;
     }
-    setState(prev => "idle");
+    window.speechSynthesis?.cancel();
+    setState(settingsRef.current.handsFree ? "sleeping" : "idle");
+    if (settingsRef.current.handsFree) {
+       setTimeout(safeStartRecognition, 100);
+    }
   }
 
-  const playAudio = async (text: string) => {
+  const playAudio = async (text: string, onComplete?: () => void) => {
+    if (!settingsRef.current.autoSpeak) return onComplete?.();
     try {
        const ttsStart = performance.now();
        setState("speaking");
+       try { recognitionRef.current?.stop(); } catch(e){} // Explicitly stop STT to prevent hearing itself
+       
        if (!audioRef.current) {
           audioRef.current = new Audio();
        }
        // Using the proxy endpoint to avoid CORS and pass headers safely while natively streaming
-       const url = `/api/tts?text=${encodeURIComponent(text)}&voiceId=${voiceId}`;
+       const url = `/api/tts?text=${encodeURIComponent(text)}&voiceId=${settingsRef.current.voiceId}`;
        audioRef.current.src = url;
-       audioRef.current.playbackRate = playbackRate;
+       audioRef.current.playbackRate = settingsRef.current.speechRate;
        audioRef.current.muted = isMuted;
        audioRef.current.onended = () => {
-          setState("idle");
+          if (onComplete) {
+             onComplete();
+          } else {
+             setState(settingsRef.current.handsFree ? "sleeping" : "idle");
+             if (settingsRef.current.handsFree) {
+                setTimeout(safeStartRecognition, 100);
+             }
+          }
        };
        audioRef.current.onerror = () => {
           console.error("TTS playback error");
@@ -225,11 +330,36 @@ function HomeContent() {
     }
   };
 
+  const playWakeSound = () => {
+    try {
+      const ctx = audioContextRef.current || new (window.AudioContext || (window as any).webkitAudioContext)();
+      audioContextRef.current = ctx;
+      if (ctx.state === 'suspended') ctx.resume();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(600, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.1);
+      gain.gain.setValueAtTime(0, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.1, ctx.currentTime + 0.05);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.15);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.15);
+    } catch(e) {}
+  };
+
   const sendCommand = async (cmd: string) => {
     if (!cmd.trim()) return;
     
     // Attempt saving to memory
-    saveMessage("current_session", "user", cmd);
+    saveMessage(currentSessionId, "user", cmd);
+
+    // Update session title if it's new
+    if (messages.length <= 1) {
+        setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, title: cmd.slice(0, 30) + "..." } : s));
+    }
 
     const newMessage: Message = {
       id: Date.now().toString(),
@@ -316,7 +446,8 @@ function HomeContent() {
                    const parsed = JSON.parse(replyText);
                    if (parsed && parsed.output) displayContent = parsed.output;
                 } catch(err) {
-                   // Ignore incomplete JSON errors during streaming
+                   const match = replyText.match(/"output"\s*:\s*"([^"]*)/);
+                   if (match) displayContent = match[1].replace(/\\n/g, '\n');
                 }
                 
                 setMessages(prev => prev.map(m => m.id === replyMsgId ? { ...m, content: displayContent } : m));
@@ -336,7 +467,7 @@ function HomeContent() {
       const totalN8n = performance.now() - n8nStart;
       setMetrics(m => ({ ...m, n8n: totalN8n, total: Object.values(m).reduce((a,b)=>a+b,0) + totalN8n }));
       
-      saveMessage("current_session", "catherine", replyText);
+      saveMessage(currentSessionId, "catherine", replyText);
       await playAudio(replyText);
       
     } catch (e: any) {
@@ -355,21 +486,63 @@ function HomeContent() {
     }
     const recognition = new SpeechRecognition();
     recognition.lang = 'en-US';
-    recognition.interimResults = false;
+    recognition.continuous = false; // Wait for silence
+    recognition.interimResults = false; // Only finalize full phrases
     recognition.maxAlternatives = 1;
     
     recognition.onstart = () => {
-       setState("listening");
+       isRecognizingRef.current = true;
+       if (stateRef.current !== "sleeping") {
+          setState("listening");
+       }
     };
     
     recognition.onresult = (event: any) => {
-       const text = event.results[0][0].transcript;
-       if (text) {
-          sendCommand(text);
+       const text = event.results[0][0].transcript.trim();
+       const lowerText = text.toLowerCase();
+       const wakeWord = settingsRef.current.wakeWord.toLowerCase();
+
+       if (lowerText === `${wakeWord} stop` || lowerText === "stop") {
+           stopAudio();
+           return;
+       }
+
+       if (stateRef.current === "sleeping") {
+           if (lowerText.startsWith(wakeWord) || lowerText.includes(wakeWord)) {
+               // Extract everything after the wake word (naturally ignores "Hey", "Ok", etc.)
+               let command = text.substring(lowerText.indexOf(wakeWord) + wakeWord.length).trim();
+               // Remove leading punctuation often added by STT (e.g. "Catherine, what's..." -> "what's...")
+               command = command.replace(/^[,.?!-]+\s*/, '');
+               
+               if (command.length > 0) {
+                   // One-shot mode: "Hey Catherine, what is the weather"
+                   if (settingsRef.current.wakeMode === "beep") playWakeSound();
+                   sendCommand(command);
+               } else {
+                   // Two-step mode: "Catherine" ... (wait for "Yes?")
+                   if (settingsRef.current.wakeMode === "tts") {
+                       setState("processing"); // Pause listening state
+                       try { recognitionRef.current?.stop(); } catch(e){}
+                       playAudio(settingsRef.current.wakeAcknowledge, () => {
+                           setState("listening");
+                           setTimeout(safeStartRecognition, 100);
+                       });
+                   } else {
+                       playWakeSound();
+                       setState("listening");
+                   }
+               }
+           }
+           return;
+       }
+
+       if (stateRef.current === "listening") {
+           if (text) sendCommand(text);
        }
     };
     
     recognition.onerror = (event: any) => {
+       isRecognizingRef.current = false;
        if (event.error !== 'no-speech') {
          setError("Speech recognition error: " + event.error);
        }
@@ -378,18 +551,32 @@ function HomeContent() {
     };
 
     recognition.onend = () => {
-       if (stateRef.current === "listening") {
-          setState("idle");
-          stopMicrophone(); // Make sure to stop mic analysis
+       isRecognizingRef.current = false;
+       if (settingsRef.current.handsFree) {
+           if (stateRef.current === "sleeping" || stateRef.current === "listening") {
+               setTimeout(safeStartRecognition, 100);
+           }
+       } else {
+           if (stateRef.current === "listening") setState("idle");
+           stopMicrophone();
        }
     };
     
     return recognition;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); 
+  }, [safeStartRecognition]); 
 
   useEffect(() => {
-     recognitionRef.current = initSpeechRecognition();
+     const rec = initSpeechRecognition();
+     recognitionRef.current = rec;
+     return () => {
+         if (rec) {
+             rec.onstart = null;
+             rec.onend = null;
+             rec.onresult = null;
+             rec.abort();
+         }
+     }
   }, [initSpeechRecognition]);
 
 
@@ -411,6 +598,8 @@ function HomeContent() {
   };
 
   const toggleRecording = async () => {
+    if (isHandsFree) return; // Prevent manual override while hands free is active
+
     if (state === "listening") {
       recognitionRef.current?.stop();
     } else if (state === "speaking") {
@@ -447,6 +636,16 @@ function HomeContent() {
     return () => window.removeEventListener("keydown", handleKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
+
+  useEffect(() => {
+    if (settings.handsFree) {
+       setState("sleeping");
+       setTimeout(safeStartRecognition, 100);
+    } else {
+       setState("idle");
+       try { recognitionRef.current?.stop(); } catch(e){}
+    }
+  }, [settings.handsFree, safeStartRecognition]);
 
   // Update volume when muted
   useEffect(() => {
@@ -521,45 +720,95 @@ function HomeContent() {
       const initialMessage: Message = {
         id: Date.now().toString() + "_init",
         role: "catherine",
-        content: "Hello, I'm Catherine. How can I assist you today?",
+        content: `Hello, I'm ${settingsRef.current.wakeWord}. How can I assist you today?`,
         timestamp: Date.now(),
         isNew: true
       };
       setMessages([initialMessage]);
+      const newSessionId = "session_" + Date.now();
+      setCurrentSessionId(newSessionId);
+      setSessions(prev => [{ id: newSessionId, title: "New Conversation", updatedAt: Date.now() }, ...prev]);
   };
 
-  // Load from localStorage
-  useEffect(() => {
-    const savedMessages = localStorage.getItem("catherine-messages");
-    if (savedMessages) {
-      try {
-        const parsed = JSON.parse(savedMessages);
-        if (parsed.length > 0) {
-           setMessages(parsed);
-        } else {
-           createNewSession();
-        }
-      } catch (e) { createNewSession(); }
-    } else {
-       createNewSession();
-    }
-    setIsLoaded(true);
-  }, []);
-
-  // Save to localStorage when messages change
-  useEffect(() => {
-    if (isLoaded && messages.length > 0) {
-       localStorage.setItem("catherine-messages", JSON.stringify(messages));
-    }
-  }, [messages, isLoaded]);
-
-  const clearChat = () => {
-    setMessages([]);
+  const handleDeleteMessage = async (id: string) => {
+      if (!confirm("Delete this message?")) return;
+      setMessages(prev => prev.filter(m => m.id !== id));
+      await deleteMessage(id);
+      const saved = JSON.parse(localStorage.getItem(`catherine-messages-${currentSessionId}`) || "[]");
+      localStorage.setItem(`catherine-messages-${currentSessionId}`, JSON.stringify(saved.filter((m: any) => m.id !== id)));
   };
+
+  const handleDeleteSession = async (id: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (!confirm("Delete this conversation?")) return;
+      await clearConversation(id);
+      localStorage.removeItem(`catherine-messages-${id}`);
+      setSessions(prev => prev.filter(s => s.id !== id));
+      if (currentSessionId === id) createNewSession();
+  };
+
+  const handleClearAll = () => {
+      if (!confirm("Clear current conversation?")) return;
+      setMessages([]);
+      clearConversation(currentSessionId);
+      localStorage.removeItem(`catherine-messages-${currentSessionId}`);
+      createNewSession();
+  };
+
+  const handleClearAllSessions = async () => {
+      if (!confirm("WARNING: This will permanently delete ALL conversations. Proceed?")) return;
+      setMessages([]);
+      setSessions([]);
+      
+      // Clear local storage
+      const keys = Object.keys(localStorage);
+      keys.forEach(k => {
+          if (k.startsWith("catherine-messages-")) {
+              localStorage.removeItem(k);
+          }
+      });
+      localStorage.removeItem("catherine-sessions");
+      
+      const sessionIds = sessions.map(s => s.id);
+      if (sessionIds.length > 0) {
+         await clearAllConversations(sessionIds);
+      }
+      
+      createNewSession();
+  };
+
+  const handleExport = () => {
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(messages, null, 2));
+      const node = document.createElement('a');
+      node.setAttribute("href", dataStr);
+      node.setAttribute("download", "catherine_chat_history.json");
+      document.body.appendChild(node);
+      node.click();
+      node.remove();
+  };
+
+  const handleCopy = (id: string, content: string) => {
+      navigator.clipboard.writeText(content);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const filteredSessions = sessions.filter(s => s.title.toLowerCase().includes(sessionSearch.toLowerCase()));
+
+  const getStatusDisplay = () => {
+      switch(state) {
+          case "sleeping": return { label: "SLEEPING", color: "bg-red-500/50 text-red-500" };
+          case "listening": return { label: "LISTENING", color: "bg-amber-400 text-amber-400" };
+          case "processing": return { label: "THINKING", color: "bg-cyan-400 text-cyan-400" };
+          case "speaking": return { label: "SPEAKING", color: "bg-green-400 text-green-400" };
+          default: return { label: "IDLE", color: "bg-white/20 text-white/50" };
+      }
+  };
+  const status = getStatusDisplay();
 
   return (
     <div 
-      className="flex h-screen w-full bg-[#030303] text-[#e5e5e5] font-sans overflow-hidden relative"
+      className="flex h-screen w-full bg-[var(--bg-main)] text-[var(--text-main)] font-sans overflow-hidden relative transition-colors duration-300"
       style={{
          "--accent-rgb": themeRgbMap[themeColor],
          "--accent": `rgb(${themeRgbMap[themeColor]})`,
@@ -573,14 +822,148 @@ function HomeContent() {
          "--accent-50": `rgba(${themeRgbMap[themeColor]}, 0.5)`,
       } as React.CSSProperties}
     >
-      <div className="absolute inset-0 z-0 bg-gradient-to-b from-[#020202] to-[#050505] pointer-events-none" />
+      <div className="absolute inset-0 z-0 bg-gradient-to-b from-[var(--bg-main)] to-[var(--bg-surface)] pointer-events-none opacity-50" />
+
+      {/* SIDEBAR */}
+      <div className={`absolute md:relative z-40 h-full bg-[var(--bg-surface)] border-r border-[var(--border-color)] transition-all duration-300 overflow-hidden flex flex-col shadow-2xl md:shadow-none ${isSidebarOpen ? "w-[280px] translate-x-0" : "w-0 -translate-x-full md:w-0 md:translate-x-0"}`}>
+         <div className="p-4 flex items-center justify-between border-b border-[var(--border-color)] shrink-0">
+            <span className="text-xs font-mono tracking-widest text-[var(--text-muted)] uppercase">Sessions</span>
+               <div className="flex items-center gap-2">
+                  <button onClick={handleClearAllSessions} aria-label="Delete All Sessions" className="text-red-400/50 hover:text-red-400 transition-colors" title="Delete All Sessions"><Trash2 className="w-4 h-4" /></button>
+                  <button onClick={() => setIsSidebarOpen(false)} aria-label="Close Sidebar" className="md:hidden text-[var(--text-muted)] hover:text-[var(--text-main)]"><X className="w-4 h-4" /></button>
+               </div>
+         </div>
+         <div className="p-3 border-b border-[var(--border-color)]">
+            <div className="relative mb-3">
+               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
+               <input type="text" placeholder="Search chats..." value={sessionSearch} onChange={e => setSessionSearch(e.target.value)} className="w-full bg-[var(--bg-surface-hover)] border border-[var(--border-color)] rounded-lg py-2 pl-9 pr-3 text-sm text-[var(--text-main)] outline-none focus:border-[var(--accent-50)] transition-colors" aria-label="Search chats" />
+            </div>
+            <button onClick={createNewSession} aria-label="New Chat" className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-[var(--bg-surface-hover)] hover:bg-[var(--accent-10)] text-[var(--accent)] border border-[var(--border-color)] hover:border-[var(--accent-30)] transition-all text-xs font-mono uppercase tracking-widest shadow-sm focus-visible:ring-2 focus-visible:ring-[var(--accent)]">
+               <Plus className="w-3.5 h-3.5" /> New Chat
+            </button>
+         </div>
+         <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-1">
+            {filteredSessions.map(s => (
+               <div 
+                  key={s.id} 
+                  onClick={() => { setCurrentSessionId(s.id); setIsSidebarOpen(false); }}
+                  className={`w-full text-left p-3 rounded-lg cursor-pointer group flex items-center justify-between transition-all ${currentSessionId === s.id ? "bg-[var(--accent-10)] border border-[var(--accent-30)] text-[var(--accent)] shadow-sm" : "bg-transparent border border-transparent hover:bg-[var(--bg-surface-hover)] text-[var(--text-muted)] hover:text-[var(--text-main)]"}`}
+               >
+                  <div className="flex items-center gap-3 overflow-hidden">
+                     <MessageSquare className="w-3.5 h-3.5 shrink-0 opacity-50" />
+                     <span className="text-sm truncate">{s.title}</span>
+                  </div>
+                  <button onClick={(e) => handleDeleteSession(s.id, e)} aria-label="Delete Session" className="opacity-0 group-hover:opacity-100 text-red-400/50 hover:text-red-400 transition-opacity p-1"><Trash2 className="w-3.5 h-3.5" /></button>
+               </div>
+            ))}
+         </div>
+      </div>
+
+      {/* SETTINGS MODAL */}
+      <AnimatePresence>
+         {isSettingsOpen && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+               <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-md bg-[var(--bg-surface)] border border-[var(--border-color)] rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+                  <div className="p-5 flex items-center justify-between border-b border-[var(--border-color)] bg-[var(--bg-surface)]">
+                     <h2 className="text-sm font-mono tracking-widest uppercase text-[var(--accent)]">System Config</h2>
+                     <button onClick={() => setIsSettingsOpen(false)} aria-label="Close Settings" className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors"><X className="w-5 h-5" /></button>
+                  </div>
+                  <div className="p-6 flex flex-col gap-8 overflow-y-auto max-h-[70vh]">
+                     
+                     {/* Appearance */}
+                     <section className="flex flex-col gap-4">
+                        <h3 className="text-[10px] font-mono tracking-widest text-[var(--accent)] uppercase flex items-center gap-2"><Sun className="w-3 h-3" /> Appearance</h3>
+                        <div className="flex items-center justify-between bg-[var(--bg-surface-hover)] p-3 rounded-lg border border-[var(--border-color)]">
+                           <span className="text-sm text-[var(--text-main)]">Theme Mode</span>
+                           <button onClick={() => setSettings({...settings, theme: settings.theme === 'dark' ? 'light' : 'dark'})} className="flex items-center gap-2 px-3 py-1.5 bg-[var(--bg-surface)] border border-[var(--border-color)] rounded-md text-sm hover:border-[var(--accent-50)] transition-all">
+                              {settings.theme === 'dark' ? <Moon className="w-4 h-4 text-[var(--accent)]" /> : <Sun className="w-4 h-4 text-[var(--accent)]" />}
+                              {settings.theme === 'dark' ? 'Dark' : 'Light'}
+                           </button>
+                        </div>
+                     </section>
+
+                     {/* Voice & Audio */}
+                     <section className="flex flex-col gap-4">
+                        <h3 className="text-[10px] font-mono tracking-widest text-[var(--accent)] uppercase flex items-center gap-2"><Volume2 className="w-3 h-3" /> Voice & Audio</h3>
+                        <div className="flex flex-col gap-2">
+                           <label className="text-xs font-mono text-[var(--text-muted)] uppercase tracking-wider">ElevenLabs Voice</label>
+                           <select value={settings.voiceId} onChange={(e) => setSettings({...settings, voiceId: e.target.value})} className="bg-[var(--bg-surface-hover)] border border-[var(--border-color)] rounded-lg p-2.5 text-sm outline-none focus:border-[var(--accent-50)] text-[var(--text-main)] transition-colors">
+                              {voices.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                           </select>
+                        </div>
+                        <div className="flex flex-col gap-2">
+                           <label className="flex items-center justify-between text-xs font-mono text-[var(--text-muted)] uppercase tracking-wider">
+                              <span>Speech Rate</span>
+                              <span className="text-[var(--accent)]">{settings.speechRate.toFixed(1)}x</span>
+                           </label>
+                           <input type="range" min="0.5" max="2" step="0.1" value={settings.speechRate} onChange={(e) => setSettings({...settings, speechRate: parseFloat(e.target.value)})} className="accent-[var(--accent)]" />
+                        </div>
+                        <label className="flex items-center justify-between cursor-pointer group p-3 bg-[var(--bg-surface-hover)] border border-[var(--border-color)] rounded-lg">
+                           <span className="text-sm text-[var(--text-main)] group-hover:text-[var(--accent)] transition-colors">Auto-Speak Responses</span>
+                           <input type="checkbox" checked={settings.autoSpeak} onChange={(e) => setSettings({...settings, autoSpeak: e.target.checked})} className="w-4 h-4 accent-[var(--accent)]" />
+                        </label>
+                     </section>
+
+                     {/* Wake Word Behavior */}
+                     <section className="flex flex-col gap-4">
+                        <h3 className="text-[10px] font-mono tracking-widest text-[var(--accent)] uppercase flex items-center gap-2"><Mic className="w-3 h-3" /> Wake Word Behavior</h3>
+                        <label className="flex items-center justify-between cursor-pointer group p-3 bg-[var(--bg-surface-hover)] border border-[var(--border-color)] rounded-lg">
+                           <span className="text-sm text-[var(--text-main)] group-hover:text-[var(--accent)] transition-colors">Hands-Free (Continuous)</span>
+                           <input type="checkbox" checked={settings.handsFree} onChange={(e) => setSettings({...settings, handsFree: e.target.checked})} className="w-4 h-4 accent-[var(--accent)]" />
+                        </label>
+                        <div className="flex flex-col gap-2">
+                           <label className="text-xs font-mono text-[var(--text-muted)] uppercase tracking-wider">Wake Word</label>
+                           <input type="text" value={settings.wakeWord} onChange={(e) => setSettings({...settings, wakeWord: e.target.value})} className="bg-[var(--bg-surface-hover)] border border-[var(--border-color)] rounded-lg p-2.5 text-sm outline-none focus:border-[var(--accent-50)] transition-colors text-[var(--text-main)]" />
+                        </div>
+                        <div className="flex flex-col gap-2">
+                           <label className="flex items-center justify-between text-xs font-mono text-[var(--text-muted)] uppercase tracking-wider">
+                              <span>Wake Timeout</span>
+                              <span className="text-[var(--accent)]">{settings.wakeTimeout}s</span>
+                           </label>
+                           <input type="range" min="3" max="15" step="1" value={settings.wakeTimeout} onChange={(e) => setSettings({...settings, wakeTimeout: parseInt(e.target.value)})} className="accent-[var(--accent)]" />
+                        </div>
+                        <div className="flex flex-col gap-2">
+                           <label className="text-xs font-mono text-[var(--text-muted)] uppercase tracking-wider">Wake Acknowledgement</label>
+                           <select value={settings.wakeMode} onChange={(e) => setSettings({...settings, wakeMode: e.target.value as "beep" | "tts"})} className="bg-[var(--bg-surface-hover)] border border-[var(--border-color)] rounded-lg p-2.5 text-sm outline-none focus:border-[var(--accent-50)] text-[var(--text-main)]">
+                              <option value="beep">Beep Sound</option>
+                              <option value="tts">Voice (TTS)</option>
+                           </select>
+                        </div>
+                        {settings.wakeMode === "tts" && (
+                           <div className="flex flex-col gap-2">
+                              <label className="text-xs font-mono text-[var(--text-muted)] uppercase tracking-wider">Acknowledgement Phrase</label>
+                              <input type="text" value={settings.wakeAcknowledge} onChange={(e) => setSettings({...settings, wakeAcknowledge: e.target.value})} className="bg-[var(--bg-surface-hover)] border border-[var(--border-color)] rounded-lg p-2.5 text-sm outline-none focus:border-[var(--accent-50)] transition-colors text-[var(--text-main)]" />
+                           </div>
+                        )}
+                     </section>
+                  </div>
+               </motion.div>
+            </motion.div>
+         )}
+      </AnimatePresence>
 
       {/* MAIN VIEW */}
       <main className="flex-1 flex flex-col relative py-6 md:py-10">
-        <header className="px-6 md:px-10 flex justify-center items-center shrink-0 z-10 p-4 mix-blend-screen opacity-50 hover:opacity-100 transition-opacity">
-          <div className="flex items-center gap-2">
+        <header className="px-6 md:px-10 flex justify-between items-center shrink-0 z-10 p-4">
+          <div className="flex items-center gap-4">
+            <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} aria-label="Toggle Sidebar" className="p-2 -ml-2 text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface-hover)] rounded-lg transition-colors z-20 focus-visible:ring-2 focus-visible:ring-[var(--accent)]">
+               <Menu className="w-5 h-5" />
+            </button>
+            <div className="flex items-center gap-2 mix-blend-screen opacity-50 pointer-events-none">
             <Mic className="w-3.5 h-3.5 text-[var(--accent)]" />
-            <span className="text-xs font-mono tracking-widest text-white/50 uppercase">Catherine Agent</span>
+              <span className="text-xs font-mono tracking-widest text-[var(--text-main)] uppercase">{settings.wakeWord} System</span>
+            </div>
+          </div>
+          <div className="flex gap-3">
+             <button onClick={() => setIsSettingsOpen(true)} aria-label="Settings" className="p-2 text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--accent-10)] rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)]" title="Settings">
+                <Sliders className="w-4 h-4" />
+             </button>
+             <button onClick={handleExport} aria-label="Export Chat" className="p-1.5 text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)]" title="Export Chat">
+                <Download className="w-4 h-4" />
+             </button>
+             <button onClick={handleClearAll} aria-label="Clear Current Chat" className="p-1.5 text-red-400/50 hover:text-red-400 transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)]" title="Clear Current Chat">
+                <Trash2 className="w-4 h-4" />
+             </button>
           </div>
         </header>
 
@@ -591,7 +974,7 @@ function HomeContent() {
           <div className="w-full max-w-[700px] mx-auto flex flex-col gap-8 pb-20 mt-auto">
             {messages.length === 1 && state === "idle" && (
               <div className="flex flex-col items-center justify-center gap-6 mt-10">
-                 <p className="font-mono text-xs tracking-widest text-[var(--accent)] uppercase text-center opacity-60">
+                 <p className="font-mono text-xs tracking-widest text-[var(--accent)] uppercase text-center opacity-80">
                    Suggested Commands
                  </p>
                  <div className="flex gap-3 flex-wrap justify-center max-w-md">
@@ -599,7 +982,7 @@ function HomeContent() {
                       <button 
                         key={cmd}
                         onClick={() => sendCommand(cmd)}
-                        className="px-4 py-2 bg-white/[0.03] border border-white/5 rounded-full text-xs text-white/70 hover:text-[var(--accent)] hover:border-[var(--accent-30)] hover:bg-[var(--accent-10)] transition-colors"
+                        className="px-4 py-2 bg-[var(--bg-surface)] border border-[var(--border-color)] rounded-full text-xs text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent-30)] hover:bg-[var(--accent-10)] transition-all shadow-sm focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
                       >
                          {cmd}
                       </button>
@@ -619,18 +1002,18 @@ function HomeContent() {
                     msg.role === "user" ? "right center" : "left center",
                 }}
                 key={msg.id}
-                className={`flex w-full ${msg.role === "user" ? "justify-end text-right" : "justify-start"} transition-all`}
+                className={`flex w-full group ${msg.role === "user" ? "justify-end text-right" : "justify-start"} transition-all mb-4`}
               >
-                <div className="flex flex-col max-w-[85%] relative z-10 hidden-scrollbar">
-                  <span className="text-[10px] uppercase tracking-[2px] text-white/40 mb-2">
+                <div className={`flex flex-col max-w-[85%] md:max-w-[75%] relative z-10 ${msg.role === "user" ? "items-end" : "items-start"}`}>
+                  <span className="text-[10px] uppercase tracking-[2px] text-[var(--text-muted)] mb-2 px-1">
                     {msg.role === "user" ? "User Input" : "Catherine Response"}
                   </span>
                   <div
-                    className={`text-sm leading-[1.7] backdrop-blur-2xl
+                    className={`text-[15px] leading-[1.6] backdrop-blur-xl
                              ${
                                msg.role === "catherine"
-                                 ? "text-white p-5 bg-gradient-to-b from-[#111111]/90 to-[#050505]/90 rounded-2xl rounded-tl-sm border border-[var(--accent-20)] shadow-[0_8px_32px_-12px_var(--accent-10)]"
-                                 : "text-white/90 py-3 px-5 bg-white/[0.04] rounded-2xl rounded-tr-sm border border-white/[0.08] shadow-lg"
+                                 ? "text-[var(--text-main)] p-5 bg-[var(--bg-surface)] rounded-2xl rounded-tl-sm border border-[var(--border-color)] shadow-md"
+                                 : "text-white py-3 px-5 bg-[var(--text-main)] rounded-2xl rounded-tr-sm shadow-md"
                              }`}
                   >
                     {msg.role === "catherine" ? (
@@ -643,7 +1026,7 @@ function HomeContent() {
                              </span>
                           </div>
                         )}
-                        <div className="markdown-body text-white">
+                        <div className="markdown-body text-[var(--text-main)]">
                           <ReactMarkdown>{msg.content}</ReactMarkdown>
                         </div>
                       </div>
@@ -651,10 +1034,22 @@ function HomeContent() {
                       msg.content
                     )}
                   </div>
-                  <div className="flex gap-4 justify-between mt-2">
+                  <div className={`flex gap-4 mt-2 w-full items-center ${msg.role === "user" ? "justify-end flex-row-reverse" : "justify-start"}`}>
+                    <div className="flex items-center gap-1">
+                        {msg.role === "user" && (
+                            <button onClick={() => handleDeleteMessage(msg.id)} aria-label="Delete Message" className="opacity-0 group-hover:opacity-100 p-1.5 text-red-400/60 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all" title="Delete Message">
+                                <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                        )}
+                        {msg.role === "catherine" && (
+                            <button onClick={() => handleCopy(msg.id, msg.content)} aria-label="Copy Response" className="opacity-0 group-hover:opacity-100 p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--accent-10)] rounded-lg transition-all" title="Copy Response">
+                                {copiedId === msg.id ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+                            </button>
+                        )}
+                    </div>
                     {msg.timestamp && (
                       <span
-                        className={`text-[10px] text-white/30 font-mono ${msg.role === "user" ? "text-right w-full" : ""}`}
+                        className={`text-[10px] text-[var(--text-muted)] font-mono px-1`}
                       >
                         {new Date(msg.timestamp).toLocaleTimeString([], {
                           hour: "2-digit",
@@ -684,10 +1079,10 @@ function HomeContent() {
                 className="flex w-full justify-start"
               >
                 <div className="flex flex-col max-w-[85%] relative z-10">
-                  <span className="text-[10px] uppercase tracking-[2px] text-white/40 mb-2">
+                      <span className="text-[10px] uppercase tracking-[2px] text-[var(--text-muted)] mb-2 px-1">
                     Catherine is typing...
                   </span>
-                  <div className="text-sm text-white p-5 bg-gradient-to-b from-[#111111]/90 to-[#050505]/90 rounded-2xl rounded-tl-sm border border-[var(--accent-20)] shadow-[0_8px_32px_-12px_var(--accent-10)] flex items-center justify-center min-w-[80px] h-[52px] backdrop-blur-2xl overflow-hidden relative">
+                      <div className="text-sm text-[var(--text-main)] p-5 bg-[var(--bg-surface)] rounded-2xl rounded-tl-sm border border-[var(--border-color)] shadow-md flex items-center justify-center min-w-[80px] h-[52px] backdrop-blur-2xl overflow-hidden relative">
                     <svg width="100%" height="100%" viewBox="0 0 60 20" className="absolute inset-0 m-auto opacity-70">
                       <motion.path
                         d="M 0 10 Q 15 0 30 10 T 60 10"
@@ -751,7 +1146,7 @@ function HomeContent() {
              )}
           </AnimatePresence>
 
-          <div className="flex items-center gap-4 bg-[#080808]/90 backdrop-blur-3xl border border-white/5 p-3 rounded-[40px] shadow-[0_8px_32px_rgba(0,0,0,0.8)] w-full relative">
+          <div className="flex items-center gap-4 bg-[var(--bg-surface)] backdrop-blur-3xl border border-[var(--border-color)] p-3 rounded-[40px] shadow-2xl w-full relative transition-colors">
             
             <div className="hidden md:flex w-[100px] justify-center items-center px-2 shrink-0">
               <AnimatePresence mode="wait">
@@ -797,25 +1192,16 @@ function HomeContent() {
                           />
                         ))}
                   </motion.div>
-                ) : state === "processing" ? (
-                  <motion.p
-                    key="processing"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="text-[var(--accent)] text-[9px] font-mono tracking-widest uppercase"
-                  >
-                    Processing
-                  </motion.p>
                 ) : (
                   <motion.p 
-                    key="idle"
+                    key={state}
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
-                    className="text-white/30 text-[9px] font-mono tracking-[0.2em] uppercase"
+                    className={`flex items-center gap-2 text-[9px] font-mono tracking-[0.2em] uppercase ${status.color.split(' ')[1]}`}
                   >
-                    SYS.IDLE
+                    <span className={`w-2 h-2 rounded-full ${status.color.split(' ')[0]} shadow-[0_0_8px_currentColor]`} />
+                    {status.label}
                   </motion.p>
                 )}
               </AnimatePresence>
@@ -823,13 +1209,13 @@ function HomeContent() {
 
             <form 
                onSubmit={(e) => { e.preventDefault(); const form = e.target as HTMLFormElement; const input = form.elements.namedItem('q') as HTMLInputElement; const t = input.value; if(t) sendCommand(t); form.reset(); }}
-               className="flex-1 flex items-center bg-white/[0.02] hover:bg-white/[0.04] transition-colors rounded-full px-6 h-[56px] border border-white/10 group focus-within:border-[var(--accent-40)] focus-within:bg-white/[0.05]"
+               className="flex-1 flex items-center bg-[var(--bg-surface-hover)] hover:bg-[var(--border-color)] transition-colors rounded-full px-6 h-[56px] border border-[var(--border-color)] group focus-within:border-[var(--accent-40)] focus-within:bg-[var(--bg-surface)]"
             >
                <input 
                   name="q"
                   type="text"
                   placeholder="Message Catherine..."
-                  className="bg-transparent border-none outline-none text-[15px] p-2 text-white w-full placeholder-white/30"
+                  className="bg-transparent border-none outline-none text-[15px] p-2 text-[var(--text-main)] w-full placeholder-[var(--text-muted)]"
                   autoComplete="off"
                />
                <button type="submit" className="hidden"></button>
@@ -837,11 +1223,13 @@ function HomeContent() {
 
             <button
               onClick={toggleRecording}
+              disabled={settings.handsFree}
+              aria-label={state === "listening" ? "Stop Recording" : "Start Recording"}
               className={`relative flex items-center justify-center w-[64px] h-[64px] rounded-full shrink-0 focus:outline-none transition-all duration-300 shadow-[0_0_30px_var(--accent-20)]
                     ${
                       state === "listening"
                         ? "bg-[#ef4444] shadow-[0_0_30px_rgba(239,68,68,0.5)] text-white scale-110"
-                        : "bg-gradient-to-tr from-[var(--accent)] to-[var(--accent-80)] hover:scale-105 active:scale-95 text-[#030303]"
+                        : "bg-[var(--accent)] hover:scale-105 active:scale-95 text-white"
                     } ${hapticPulse ? "scale-90 brightness-150" : ""}`}
             >
               {state === "idle" || state === "speaking" ? (
@@ -856,13 +1244,13 @@ function HomeContent() {
           </div>
           <div className="flex items-center gap-1.5 opacity-60">
              <div className={`w-1.5 h-1.5 rounded-full ${sysStatus === 'ok' ? 'bg-[var(--accent)] shadow-[0_0_5px_var(--accent-50)]' : sysStatus === 'checking' ? 'bg-amber-400 animate-pulse' : 'bg-red-500 shadow-[0_0_5px_#ef4444]'}`} />
-             <span className="text-[8px] font-mono tracking-widest uppercase text-white/50">
+             <span className="text-[8px] font-mono tracking-widest uppercase text-[var(--text-muted)]">
                {sysStatus === 'ok' ? 'API_ONLINE' : sysStatus === 'checking' ? 'PINGING...' : 'API_ERR'}
              </span>
           </div>
           <div className="flex items-center gap-1.5 opacity-60 ml-3">
              <div className={`w-1.5 h-1.5 rounded-full ${state !== 'idle' ? 'bg-cyan-400 shadow-[0_0_5px_#22d3ee]' : 'bg-red-500 shadow-[0_0_5px_#ef4444]'}`} />
-             <span className="text-[8px] font-mono tracking-widest uppercase text-white/50">
+             <span className="text-[8px] font-mono tracking-widest uppercase text-[var(--text-muted)]">
                {state !== 'idle' ? 'CORE_ACTIVE' : 'CORE_IDLE'}
              </span>
           </div>
@@ -872,16 +1260,47 @@ function HomeContent() {
       <style
         dangerouslySetInnerHTML={{
           __html: `
+        :root {
+          --bg-main: #f8fafc;
+          --bg-surface: #ffffff;
+          --bg-surface-hover: #f1f5f9;
+          --text-main: #0f172a;
+          --text-muted: #64748b;
+          --border-color: rgba(0, 0, 0, 0.1);
+          --scrollbar-bg: transparent;
+          --scrollbar-thumb: rgba(0, 0, 0, 0.2);
+          color-scheme: light;
+        }
+        .dark {
+          --bg-main: #030303;
+          --bg-surface: #0a0a0a;
+          --bg-surface-hover: rgba(255, 255, 255, 0.05);
+          --text-main: #e5e5e5;
+          --text-muted: rgba(255, 255, 255, 0.5);
+          --border-color: rgba(255, 255, 255, 0.1);
+          --scrollbar-bg: transparent;
+          --scrollbar-thumb: rgba(255, 255, 255, 0.1);
+          color-scheme: dark;
+        }
+        
         .mask-image-fade {
            mask-image: linear-gradient(to bottom, transparent, black 10%, black 100%, black);
            -webkit-mask-image: linear-gradient(to bottom, transparent, black 10%, black 100%, black);
         }
-        .hidden-scrollbar::-webkit-scrollbar {
-           display: none;
+        ::-webkit-scrollbar {
+          width: 6px;
+          height: 6px;
         }
-        .hidden-scrollbar {
-           -ms-overflow-style: none;
-           scrollbar-width: none;
+        ::-webkit-scrollbar-track {
+          background: var(--scrollbar-bg);
+        }
+        ::-webkit-scrollbar-thumb {
+          background: var(--scrollbar-thumb);
+          border-radius: 10px;
+          transition: background 0.3s ease;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+          background: var(--accent-50);
         }
       `
         }}
@@ -920,7 +1339,7 @@ const VoiceCore = memo(function VoiceCore({ state }: { state: State }) {
                duration: 0.15,
                ease: "linear"
            }}
-           className="w-[120px] h-[120px] rounded-full border border-[var(--accent-20)] bg-[#030303]/60 backdrop-blur-xl shadow-[inset_0_0_30px_var(--accent-10)] flex items-center justify-center relative overflow-hidden"
+           className="w-[120px] h-[120px] rounded-full border border-[var(--accent-20)] bg-[var(--bg-main)]/60 backdrop-blur-xl shadow-[inset_0_0_30px_var(--accent-10)] flex items-center justify-center relative overflow-hidden"
        >
           <div className={`absolute inset-0 bg-gradient-to-tr from-[var(--accent-10)] to-transparent transition-opacity duration-500 ${state !== 'idle' ? 'opacity-100' : 'opacity-0'}`} />
           <div className={`w-[40px] h-[40px] rounded-full bg-[var(--accent)] transition-all duration-300 ${state !== 'idle' ? 'blur-[15px] opacity-80' : 'blur-[25px] opacity-30'} ${isSpeaking ? 'animate-pulse' : ''}`} />

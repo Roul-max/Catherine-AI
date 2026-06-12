@@ -57,3 +57,34 @@ export async function loadMessages(conversationId: string) {
      throw e;
   }
 }
+
+export async function deleteMessage(id: string) {
+  try {
+     const supabase = getSupabase();
+     const { error } = await supabase.from("messages").delete().eq("id", id);
+     if (error) throw error;
+  } catch(e) {
+     console.error("Supabase deleteMessage error:", e);
+  }
+}
+
+export async function clearConversation(conversationId: string) {
+  try {
+     const supabase = getSupabase();
+     const { error } = await supabase.from("messages").delete().eq("conversation_id", conversationId);
+     if (error) throw error;
+  } catch(e) {
+     console.error("Supabase clearConversation error:", e);
+  }
+}
+
+export async function clearAllConversations(sessionIds: string[]) {
+  if (!sessionIds || sessionIds.length === 0) return;
+  try {
+     const supabase = getSupabase();
+     const { error } = await supabase.from("messages").delete().in("conversation_id", sessionIds);
+     if (error) throw error;
+  } catch(e) {
+     console.error("Supabase clearAllConversations error:", e);
+  }
+}
