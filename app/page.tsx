@@ -65,7 +65,7 @@ function HomeContent() {
   
   const themeColor = "cyan";
   const visMode = "bars";
-  const voiceId = process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID || "pqHfZKP75CvOlQylNhV4";
+  const voiceId = process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID || "EXAVITQu4vr4xnSDxMaL";
   const playbackRate = 1;
 
   const [autoScroll, setAutoScroll] = useState(true);
