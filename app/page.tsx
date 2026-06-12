@@ -74,11 +74,6 @@ type ChatSession = {
   updatedAt: number;
 };
 
-type AudioQueueItem = {
-  text: string;
-  onComplete?: () => void;
-};
-
 export default function Home() {
   return <HomeContent />;
 }
@@ -250,10 +245,6 @@ function HomeContent() {
   const isRecognizingRef = useRef(false);
   const listeningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
-  const audioQueueRef = useRef<AudioQueueItem[]>([]);
-  const isPlayingRef = useRef(false);
-  const isStreamingRef = useRef(false);
-  const sentenceBufferRef = useRef("");
   const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -283,9 +274,6 @@ function HomeContent() {
   }
 
   function stopAudio() {
-    audioQueueRef.current = [];
-    isPlayingRef.current = false;
-    isStreamingRef.current = false;
     abortControllerRef.current?.abort();
 
     if (audioRef.current) {
@@ -300,97 +288,75 @@ function HomeContent() {
     }
   }
 
-  const playNextInQueue = async () => {
-      if (audioQueueRef.current.length === 0) {
-          isPlayingRef.current = false;
-          if (!isStreamingRef.current) {
-              setState(settingsRef.current.handsFree ? "sleeping" : "idle");
-              if (settingsRef.current.handsFree) {
-                  setTimeout(safeStartRecognition, 100);
-              }
-          }
-          return;
-      }
-
-      isPlayingRef.current = true;
-      const item = audioQueueRef.current.shift()!;
-
-      // Fix 4: Clean markdown symbols before sending to TTS
-      const cleanText = item.text
-        .replace(/\*\*/g, "")
-        .replace(/\*/g, "")
-        .replace(/##/g, "")
-        .replace(/—/g, " ")
-        .replace(/\s+/g, " ")
-        .replace(/^\{"output":"/, "")
-        .replace(/"\}$/, "")
-        .replace(/^\{.*?":\s*"/, "")
-        .replace(/"\s*\}$/, "")
-        .trim();
-
-      try {
-         try { recognitionRef.current?.stop(); } catch(e){} // Explicitly stop STT to prevent hearing itself
-         if (stateRef.current !== "speaking" && stateRef.current !== "processing") {
-             setState("processing");
-         }
-         
-         const url = `/api/tts?text=${encodeURIComponent(cleanText)}`;
-         const audioResponse = await fetch(url);
-
-         if (!isPlayingRef.current) return; // Discard if user interrupted during fetch
-         
-         // Fix 3: 429 and non-200 error handling
-         if (!audioResponse.ok) {
-             console.warn("TTS skipped, status:", audioResponse.status);
-             item.onComplete?.();
-             playNextInQueue();
-             return;
-         }
-         
-         const audioBlob = await audioResponse.blob();
-         const audioUrl = URL.createObjectURL(audioBlob);
-         
-         setState("speaking");
-         
-         if (!audioRef.current) audioRef.current = new Audio();
-         audioRef.current.src = audioUrl;
-         audioRef.current.playbackRate = settingsRef.current.speechRate;
-         audioRef.current.muted = isMuted;
-   
-         audioRef.current.onended = () => {
-             URL.revokeObjectURL(audioUrl);
-             item.onComplete?.();
-             playNextInQueue();
-         };
-   
-         audioRef.current.onerror = (e) => {
-             console.error("Audio playback error");
-             URL.revokeObjectURL(audioUrl);
-             item.onComplete?.();
-             playNextInQueue();
-         };
-
-          await audioRef.current.play();
-      } catch (e) {
-          console.error("TTS or Play error", e);
-          item.onComplete?.();
-          playNextInQueue();
-      }
-  };
-
   const playAudio = async (text: string, onComplete?: () => void) => {
     if (!settingsRef.current.autoSpeak) return onComplete?.();
     
-    // Fix 2: Empty text guard
     if (!text || text.trim().length < 2) {
         onComplete?.();
         return;
     }
 
-    audioQueueRef.current.push({ text, onComplete });
+    const cleanText = text
+      .replace(/\*\*/g, "")
+      .replace(/\*/g, "")
+      .replace(/##/g, "")
+      .replace(/—/g, " ")
+      .replace(/^\{"output":"/, "")
+      .replace(/"\}$/, "")
+      .trim();
 
-    if (!isPlayingRef.current) {
-        playNextInQueue();
+    try {
+       try { recognitionRef.current?.stop(); } catch(e){} // Explicitly stop STT to prevent hearing itself
+       if (stateRef.current !== "speaking" && stateRef.current !== "processing") {
+           setState("processing");
+       }
+       
+       const url = `/api/tts?text=${encodeURIComponent(cleanText)}`;
+       const audioResponse = await fetch(url);
+       
+       if (!audioResponse.ok) {
+           console.warn("TTS skipped, status:", audioResponse.status);
+           onComplete?.();
+           return;
+       }
+       
+       const audioBlob = await audioResponse.blob();
+       const audioUrl = URL.createObjectURL(audioBlob);
+       
+       setState("speaking");
+       
+       if (!audioRef.current) audioRef.current = new Audio();
+       audioRef.current.src = audioUrl;
+       audioRef.current.playbackRate = settingsRef.current.speechRate;
+       audioRef.current.muted = isMuted;
+ 
+       audioRef.current.onended = () => {
+           URL.revokeObjectURL(audioUrl);
+           onComplete?.();
+           setState(settingsRef.current.handsFree ? "sleeping" : "idle");
+           if (settingsRef.current.handsFree) {
+               setTimeout(safeStartRecognition, 100);
+           }
+       };
+ 
+       audioRef.current.onerror = (e) => {
+           console.error("Audio playback error");
+           URL.revokeObjectURL(audioUrl);
+           onComplete?.();
+           setState(settingsRef.current.handsFree ? "sleeping" : "idle");
+           if (settingsRef.current.handsFree) {
+               setTimeout(safeStartRecognition, 100);
+           }
+       };
+
+        await audioRef.current.play();
+    } catch (e) {
+        console.error("TTS Error:", e);
+        onComplete?.();
+        setState(settingsRef.current.handsFree ? "sleeping" : "idle");
+        if (settingsRef.current.handsFree) {
+            setTimeout(safeStartRecognition, 100);
+        }
     }
   };
 
@@ -446,8 +412,6 @@ function HomeContent() {
 
     try {
       abortControllerRef.current = new AbortController();
-      isStreamingRef.current = true;
-      sentenceBufferRef.current = "";
 
       const n8nStart = performance.now();
       const response = await fetch("/api/chat", {
@@ -462,7 +426,6 @@ function HomeContent() {
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
       let replyText = "";
-      let previousReplyLength = 0;
       
       const replyMsgId = Date.now().toString() + "_r";
       const replyMsg: Message = {
@@ -524,58 +487,24 @@ function HomeContent() {
                 setMessages(prev => prev.map(m => m.id === replyMsgId ? { ...m, content: displayContent } : m));
             }
          }
-         
-         // Sentence Buffer Evaluation
-         let rawText = replyText;
-         let finalText = rawText;
-         try {
-           const parsed = JSON.parse(rawText);
-           if (parsed.output) finalText = parsed.output;
-           else if (parsed.text) finalText = parsed.text;
-           else if (parsed.response) finalText = parsed.response;
-         } catch {
-           finalText = rawText;
-         }
-
-         if (finalText.length > previousReplyLength) {
-             const newText = finalText.slice(previousReplyLength);
-             previousReplyLength = finalText.length;
-
-             sentenceBufferRef.current += newText;
-             let match;
-             while ((match = sentenceBufferRef.current.match(/([.?!]+)(\s+|\n)/))) {
-                 const splitIndex = match.index! + match[1].length;
-                 const sentence = sentenceBufferRef.current.slice(0, splitIndex);
-                 sentenceBufferRef.current = sentenceBufferRef.current.slice(splitIndex).trimStart();
-                 if (sentence.trim().length > 0) playAudio(sentence.trim());
-             }
-         }
       }
       
-      // Final extraction to ensure saved memory and TTS audio only use the extracted text
+      let finalText = replyText;
       try {
-         const parsed = JSON.parse(replyText);
-         if (parsed && parsed.output) {
-            replyText = parsed.output;
-            setMessages(prev => prev.map(m => m.id === replyMsgId ? { ...m, content: replyText } : m));
-         }
-      } catch(err) {}
+        const parsed = JSON.parse(replyText);
+        if (parsed.output) finalText = parsed.output;
+        else if (parsed.text) finalText = parsed.text;
+        else if (parsed.response) finalText = parsed.response;
+        setMessages(prev => prev.map(m => m.id === replyMsgId ? { ...m, content: finalText } : m));
+      } catch {
+        finalText = replyText;
+      }
       
       const totalN8n = performance.now() - n8nStart;
       setMetrics(m => ({ ...m, n8n: totalN8n, total: Object.values(m).reduce((a,b)=>a+b,0) + totalN8n }));
       
-      saveMessage(currentSessionId, "catherine", replyText);
-      
-      isStreamingRef.current = false;
-      
-      // Flush remaining buffer text at the end of the stream
-      if (sentenceBufferRef.current.trim().length > 0) {
-          playAudio(sentenceBufferRef.current.trim());
-          sentenceBufferRef.current = "";
-      } else if (!isPlayingRef.current && audioQueueRef.current.length === 0) {
-          setState(settingsRef.current.handsFree ? "sleeping" : "idle");
-          if (settingsRef.current.handsFree) setTimeout(safeStartRecognition, 100);
-      }
+      saveMessage(currentSessionId, "catherine", finalText);
+      await playAudio(finalText);
       
     } catch (e: any) {
       if (e.name === 'AbortError') return; // Ignore intentional interrupt aborts
