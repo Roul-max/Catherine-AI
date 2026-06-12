@@ -669,31 +669,33 @@ function HomeContent() {
                   <div className="text-sm text-white p-5 bg-gradient-to-b from-[#111111]/90 to-[#050505]/90 rounded-2xl rounded-tl-sm border border-[var(--accent-20)] shadow-[0_8px_32px_-12px_var(--accent-10)] flex items-center justify-center min-w-[80px] h-[52px] backdrop-blur-2xl overflow-hidden relative">
                     <svg width="100%" height="100%" viewBox="0 0 60 20" className="absolute inset-0 m-auto opacity-70">
                       <motion.path
-                        d="M0 10 Q 15 0, 30 10 T 60 10"
+                        d="M 0 10 Q 15 0 30 10 T 60 10"
                         fill="none"
                         stroke="var(--accent)"
                         strokeWidth="1.5"
                         strokeLinecap="round"
+                        initial={{ d: "M 0 10 Q 15 0 30 10 T 60 10" }}
                         animate={{
                           d: [
-                            "M0 10 Q 15 0, 30 10 T 60 10",
-                            "M0 10 Q 15 20, 30 10 T 60 10",
-                            "M0 10 Q 15 0, 30 10 T 60 10"
+                            "M 0 10 Q 15 0 30 10 T 60 10",
+                            "M 0 10 Q 15 20 30 10 T 60 10",
+                            "M 0 10 Q 15 0 30 10 T 60 10"
                           ]
                         }}
                         transition={{ repeat: Infinity, duration: 1.2, ease: "easeInOut" }}
                       />
                       <motion.path
-                        d="M0 10 Q 15 20, 30 10 T 60 10"
+                        d="M 0 10 Q 15 20 30 10 T 60 10"
                         fill="none"
                         stroke="var(--accent-60)"
                         strokeWidth="1.5"
                         strokeLinecap="round"
+                        initial={{ d: "M 0 10 Q 15 20 30 10 T 60 10" }}
                         animate={{
                           d: [
-                            "M0 10 Q 15 20, 30 10 T 60 10",
-                            "M0 10 Q 15 0, 30 10 T 60 10",
-                            "M0 10 Q 15 20, 30 10 T 60 10"
+                            "M 0 10 Q 15 20 30 10 T 60 10",
+                            "M 0 10 Q 15 0 30 10 T 60 10",
+                            "M 0 10 Q 15 20 30 10 T 60 10"
                           ]
                         }}
                         transition={{ repeat: Infinity, duration: 0.9, ease: "easeInOut", delay: 0.2 }}
