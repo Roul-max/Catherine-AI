@@ -322,6 +322,10 @@ function HomeContent() {
         .replace(/##/g, "")
         .replace(/—/g, " ")
         .replace(/\s+/g, " ")
+        .replace(/^\{"output":"/, "")
+        .replace(/"\}$/, "")
+        .replace(/^\{.*?":\s*"/, "")
+        .replace(/"\s*\}$/, "")
         .trim();
 
       try {
@@ -522,9 +526,20 @@ function HomeContent() {
          }
          
          // Sentence Buffer Evaluation
-         if (replyText.length > previousReplyLength) {
-             const newText = replyText.slice(previousReplyLength);
-             previousReplyLength = replyText.length;
+         let rawText = replyText;
+         let finalText = rawText;
+         try {
+           const parsed = JSON.parse(rawText);
+           if (parsed.output) finalText = parsed.output;
+           else if (parsed.text) finalText = parsed.text;
+           else if (parsed.response) finalText = parsed.response;
+         } catch {
+           finalText = rawText;
+         }
+
+         if (finalText.length > previousReplyLength) {
+             const newText = finalText.slice(previousReplyLength);
+             previousReplyLength = finalText.length;
 
              sentenceBufferRef.current += newText;
              let match;
