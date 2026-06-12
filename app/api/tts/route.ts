@@ -15,6 +15,9 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    console.log("ELEVENLABS_API_KEY exists:", !!apiKey);
+    console.log("ELEVENLABS_API_KEY prefix:", apiKey?.slice(0, 6));
+    console.log("voiceId:", voiceId);
     const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`, {
       method: "POST",
       headers: {
