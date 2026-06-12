@@ -294,14 +294,22 @@ function HomeContent() {
        const url = `/api/tts?text=${encodeURIComponent(text)}`;
 
        const audioResponse = await fetch(url);
+       console.log("TTS fetch status:", audioResponse.status);
+       console.log("TTS response content-type:", audioResponse.headers.get("content-type"));
+
        const audioBlob = await audioResponse.blob();
+       console.log("Blob type:", audioBlob.type);
+       console.log("Blob size:", audioBlob.size);
+
        const audioUrl = URL.createObjectURL(audioBlob);
+       console.log("Object URL:", audioUrl);
 
        if (!audioRef.current) {
          audioRef.current = new Audio();
        }
 
        audioRef.current.src = audioUrl;
+       console.log("Audio element src set to:", audioRef.current.src);
        audioRef.current.playbackRate = settingsRef.current.speechRate;
        audioRef.current.muted = isMuted;
        audioRef.current.onended = () => {
@@ -314,8 +322,12 @@ function HomeContent() {
              }
           }
        };
-       audioRef.current.onerror = () => {
+       audioRef.current.onerror = (e) => {
+          const err = audioRef.current?.error;
           console.error("TTS playback error");
+          console.error("MediaError code:", err?.code);
+          console.error("MediaError message:", err?.message);
+          console.error("MIME type of blob:", audioBlob.type);
           setState("idle");
        };
        await audioRef.current.play();

@@ -46,11 +46,14 @@ export async function GET(req: NextRequest) {
     }
 
     const data = await response.json();
-    console.log("GEMINI RESPONSE KEYS:", JSON.stringify(Object.keys(data)));
-    console.log("GEMINI CANDIDATE:", JSON.stringify(data.candidates?.[0]?.content?.parts?.[0]));
+    console.log("=== GEMINI TTS DEBUG ===");
+    console.log("Full response keys:", Object.keys(data));
+    console.log("Candidates length:", data.candidates?.length);
+    console.log("First candidate:", JSON.stringify(data.candidates?.[0]?.content?.parts?.[0]));
     const inlineData = data.candidates?.[0]?.content?.parts?.[0]?.inlineData;
     console.log("MIME TYPE:", inlineData?.mimeType);
     console.log("DATA LENGTH:", inlineData?.data?.length);
+    console.log("======================");
 
     if (!inlineData?.data) {
       return NextResponse.json({ error: "No audio data in Gemini response" }, { status: 500 });
