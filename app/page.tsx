@@ -298,6 +298,9 @@ function HomeContent() {
                   } else if (data.text) {
                      replyText += data.text;
                      setMessages(prev => prev.map(m => m.id === replyMsgId ? { ...m, content: replyText } : m));
+                  } else if (data.output) {
+                     replyText += data.output;
+                     setMessages(prev => prev.map(m => m.id === replyMsgId ? { ...m, content: replyText } : m));
                   }
                } catch(e) {
                   // Fallback for plain text streaming without SSE format
@@ -307,10 +310,28 @@ function HomeContent() {
             } else if (line.trim().length > 0 && !line.startsWith('event:')) {
                 // Not standard SSE, maybe just plain text chunks from response
                 replyText += line;
-                setMessages(prev => prev.map(m => m.id === replyMsgId ? { ...m, content: replyText } : m));
+                
+                let displayContent = replyText;
+                try {
+                   const parsed = JSON.parse(replyText);
+                   if (parsed && parsed.output) displayContent = parsed.output;
+                } catch(err) {
+                   // Ignore incomplete JSON errors during streaming
+                }
+                
+                setMessages(prev => prev.map(m => m.id === replyMsgId ? { ...m, content: displayContent } : m));
             }
          }
       }
+      
+      // Final extraction to ensure saved memory and TTS audio only use the extracted text
+      try {
+         const parsed = JSON.parse(replyText);
+         if (parsed && parsed.output) {
+            replyText = parsed.output;
+            setMessages(prev => prev.map(m => m.id === replyMsgId ? { ...m, content: replyText } : m));
+         }
+      } catch(err) {}
       
       const totalN8n = performance.now() - n8nStart;
       setMetrics(m => ({ ...m, n8n: totalN8n, total: Object.values(m).reduce((a,b)=>a+b,0) + totalN8n }));
