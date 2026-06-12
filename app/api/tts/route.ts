@@ -26,16 +26,15 @@ export async function GET(req: NextRequest) {
       },
       body: JSON.stringify({
         text,
-        model_id: "eleven_monolingual_v1",
+        model_id: "eleven_flash_v2_5",
       }),
     });
-
-    console.log("ElevenLabs status:", response.status);
 
     if (!response.ok) {
       const errorText = await response.text();
 
-      console.log("ElevenLabs error:", errorText);
+      console.log("ELEVENLABS STATUS:", response.status);
+      console.log("ELEVENLABS ERROR:", errorText);
 
       return NextResponse.json(
         { error: errorText },
