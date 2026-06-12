@@ -30,9 +30,17 @@ export async function GET(req: NextRequest) {
       }),
     });
 
+    console.log("ElevenLabs status:", response.status);
+
     if (!response.ok) {
       const errorText = await response.text();
-      return NextResponse.json({ error: errorText }, { status: response.status });
+
+      console.log("ElevenLabs error:", errorText);
+
+      return NextResponse.json(
+        { error: errorText },
+        { status: response.status }
+      );
     }
 
     return new NextResponse(response.body, {
