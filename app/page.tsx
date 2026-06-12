@@ -288,15 +288,59 @@ function HomeContent() {
     }
   }
 
+  const speakWithWebSpeech = (text: string, onComplete?: () => void) => {
+    if (!window.speechSynthesis) {
+      console.warn("Web Speech API not supported");
+      onComplete?.();
+      setState("idle");
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = settingsRef.current.speechRate;
+    utterance.volume = isMuted ? 0 : 1;
+
+    // Pick best available female voice
+    const voices = window.speechSynthesis.getVoices();
+    const preferredVoice = voices.find(v =>
+      v.name.includes("Samantha") ||
+      v.name.includes("Google UK English Female") ||
+      v.name.includes("Microsoft Zira") ||
+      v.name.includes("Female")
+    );
+    if (preferredVoice) utterance.voice = preferredVoice;
+
+    setState("speaking");
+
+    utterance.onend = () => {
+      onComplete?.();
+      setState(settingsRef.current.handsFree ? "sleeping" : "idle");
+      if (settingsRef.current.handsFree) setTimeout(safeStartRecognition, 100);
+    };
+
+    utterance.onerror = () => {
+      onComplete?.();
+      setState("idle");
+    };
+
+    window.speechSynthesis.speak(utterance);
+  };
+
   const playAudio = async (text: string, onComplete?: () => void) => {
     if (!settingsRef.current.autoSpeak) return onComplete?.();
     
-    if (!text || text.trim().length < 2) {
-        onComplete?.();
-        return;
-    }
+    if (!text || text.trim().length < 2) return onComplete?.();
 
-    const cleanText = text
+    // Clean text
+    let finalText = text;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed.output) finalText = parsed.output;
+      else if (parsed.text) finalText = parsed.text;
+    } catch { finalText = text; }
+
+    const cleanText = finalText
       .replace(/\*\*/g, "")
       .replace(/\*/g, "")
       .replace(/##/g, "")
@@ -306,18 +350,17 @@ function HomeContent() {
       .trim();
 
     try {
-       try { recognitionRef.current?.stop(); } catch(e){} // Explicitly stop STT to prevent hearing itself
-       if (stateRef.current !== "speaking" && stateRef.current !== "processing") {
-           setState("processing");
-       }
+       try { recognitionRef.current?.stop(); } catch(e){}
+       setState("processing");
        
        const url = `/api/tts?text=${encodeURIComponent(cleanText)}`;
        const audioResponse = await fetch(url);
        
+       // If Gemini TTS fails (429, 404, etc), fall back to Web Speech API
        if (!audioResponse.ok) {
-           console.warn("TTS skipped, status:", audioResponse.status);
-           onComplete?.();
-           return;
+         console.warn("Gemini TTS unavailable, falling back to Web Speech API");
+         speakWithWebSpeech(cleanText, onComplete);
+         return;
        }
        
        const audioBlob = await audioResponse.blob();
@@ -334,29 +377,19 @@ function HomeContent() {
            URL.revokeObjectURL(audioUrl);
            onComplete?.();
            setState(settingsRef.current.handsFree ? "sleeping" : "idle");
-           if (settingsRef.current.handsFree) {
-               setTimeout(safeStartRecognition, 100);
-           }
+           if (settingsRef.current.handsFree) setTimeout(safeStartRecognition, 100);
        };
  
-       audioRef.current.onerror = (e) => {
-           console.error("Audio playback error");
+       audioRef.current.onerror = () => {
            URL.revokeObjectURL(audioUrl);
-           onComplete?.();
-           setState(settingsRef.current.handsFree ? "sleeping" : "idle");
-           if (settingsRef.current.handsFree) {
-               setTimeout(safeStartRecognition, 100);
-           }
+           console.warn("Audio element error, falling back to Web Speech API");
+           speakWithWebSpeech(cleanText, onComplete);
        };
 
         await audioRef.current.play();
     } catch (e) {
         console.error("TTS Error:", e);
-        onComplete?.();
-        setState(settingsRef.current.handsFree ? "sleeping" : "idle");
-        if (settingsRef.current.handsFree) {
-            setTimeout(safeStartRecognition, 100);
-        }
+        speakWithWebSpeech(cleanText, onComplete);
     }
   };
 
