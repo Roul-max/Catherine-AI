@@ -20,7 +20,7 @@ import {
 import ReactMarkdown from "react-markdown";
 
 // We fallback if WEBHOOK_URL is not there
-const WEBHOOK_URL = process.env.NEXT_PUBLIC_WEBHOOK_URL || "";
+const WEBHOOK_URL = process.env.NEXT_PUBLIC_N8N_WEBHOOK_URL || process.env.NEXT_PUBLIC_WEBHOOK_URL || "";
 
 const SUGGESTIONS = [
   "Run system diagnostic",
@@ -65,7 +65,7 @@ function HomeContent() {
   
   const themeColor = "cyan";
   const visMode = "bars";
-  const voiceId = "pqHfZKP75CvOlQylNhV4";
+  const voiceId = process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID || "pqHfZKP75CvOlQylNhV4";
   const playbackRate = 1;
 
   const [autoScroll, setAutoScroll] = useState(true);
@@ -244,7 +244,7 @@ function HomeContent() {
     // Prevent unconfigured webhook from throwing error
     if (!WEBHOOK_URL || WEBHOOK_URL === "YOUR_N8N_WEBHOOK_URL") {
         setCurrentTool(null);
-        setError("Please configure the n8n webhook URL in config/ai.ts");
+        setError("Please configure the n8n webhook URL in your .env file");
         setState("idle");
         return;
     }
