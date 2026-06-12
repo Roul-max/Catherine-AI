@@ -261,8 +261,16 @@ function HomeContent() {
   }, [state]);
 
   const safeStartRecognition = useCallback(() => {
-    if (!isRecognizingRef.current && recognitionRef.current) {
-      try { recognitionRef.current.start(); } catch(e) {}
+    if (
+      isRecognizingRef.current ||
+      stateRef.current === "speaking" ||
+      stateRef.current === "processing"
+    ) return;
+    try {
+      recognitionRef.current?.start();
+      isRecognizingRef.current = true;
+    } catch (e) {
+      console.warn("Recognition start failed:", e);
     }
   }, []);
 
@@ -316,7 +324,8 @@ function HomeContent() {
     utterance.onend = () => {
       onComplete?.();
       setState(settingsRef.current.handsFree ? "sleeping" : "idle");
-      if (settingsRef.current.handsFree) setTimeout(safeStartRecognition, 100);
+      // Always restart listening after Catherine finishes speaking
+      setTimeout(() => safeStartRecognition(), 300);
     };
 
     utterance.onerror = () => {
@@ -377,7 +386,8 @@ function HomeContent() {
            URL.revokeObjectURL(audioUrl);
            onComplete?.();
            setState(settingsRef.current.handsFree ? "sleeping" : "idle");
-           if (settingsRef.current.handsFree) setTimeout(safeStartRecognition, 100);
+           // Always restart listening after Catherine finishes speaking
+           setTimeout(() => safeStartRecognition(), 300);
        };
  
        audioRef.current.onerror = () => {
@@ -626,13 +636,11 @@ function HomeContent() {
 
     recognition.onend = () => {
        isRecognizingRef.current = false;
-       if (settingsRef.current.handsFree) {
-           if (stateRef.current === "sleeping" || stateRef.current === "listening") {
-               setTimeout(safeStartRecognition, 50); // Immediate restart to keep loop alive
-           }
-       } else {
-           if (stateRef.current === "listening") setState("idle");
-           stopMicrophone();
+       if (
+         stateRef.current !== "speaking" &&
+         stateRef.current !== "processing"
+       ) {
+         setTimeout(() => safeStartRecognition(), 300);
        }
     };
     
@@ -1369,8 +1377,8 @@ function HomeContent() {
            -webkit-mask-image: linear-gradient(to bottom, transparent, black 10%, black 100%, black);
         }
         ::-webkit-scrollbar {
-          width: 6px;
-          height: 6px;
+          width: 8px;
+          height: 8px;
         }
         ::-webkit-scrollbar-track {
           background: var(--scrollbar-bg);
@@ -1378,6 +1386,7 @@ function HomeContent() {
         ::-webkit-scrollbar-thumb {
           background: var(--scrollbar-thumb);
           border-radius: 10px;
+          border: 2px solid var(--bg-main);
           transition: background 0.3s ease;
         }
         ::-webkit-scrollbar-thumb:hover {
@@ -1420,7 +1429,7 @@ const VoiceCore = memo(function VoiceCore({ state }: { state: State }) {
                duration: 0.15,
                ease: "linear"
            }}
-           className="w-[120px] h-[120px] rounded-full border border-[var(--accent-20)] bg-[var(--bg-main)]/60 backdrop-blur-xl shadow-[inset_0_0_30px_var(--accent-10)] flex items-center justify-center relative overflow-hidden"
+           className="w-[120px] h-[120px] rounded-full border border-[var(--accent-20)] bg-[var(--bg-main)]/80 backdrop-blur-xl shadow-[inset_0_0_30px_var(--accent-10)] flex items-center justify-center relative overflow-hidden"
        >
           <div className={`absolute inset-0 bg-gradient-to-tr from-[var(--accent-10)] to-transparent transition-opacity duration-500 ${state !== 'idle' ? 'opacity-100' : 'opacity-0'}`} />
           <div className={`w-[40px] h-[40px] rounded-full bg-[var(--accent)] transition-all duration-300 ${state !== 'idle' ? 'blur-[15px] opacity-80' : 'blur-[25px] opacity-30'} ${isSpeaking ? 'animate-pulse' : ''}`} />
