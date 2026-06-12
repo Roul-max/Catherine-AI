@@ -291,12 +291,17 @@ function HomeContent() {
        setState("speaking");
        try { recognitionRef.current?.stop(); } catch(e){} // Explicitly stop STT to prevent hearing itself
        
-       if (!audioRef.current) {
-          audioRef.current = new Audio();
-       }
-       // Using the proxy endpoint to avoid CORS and pass headers safely while natively streaming
        const url = `/api/tts?text=${encodeURIComponent(text)}`;
-       audioRef.current.src = url;
+
+       const audioResponse = await fetch(url);
+       const audioBlob = await audioResponse.blob();
+       const audioUrl = URL.createObjectURL(audioBlob);
+
+       if (!audioRef.current) {
+         audioRef.current = new Audio();
+       }
+
+       audioRef.current.src = audioUrl;
        audioRef.current.playbackRate = settingsRef.current.speechRate;
        audioRef.current.muted = isMuted;
        audioRef.current.onended = () => {
