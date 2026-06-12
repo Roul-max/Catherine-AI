@@ -74,6 +74,11 @@ type ChatSession = {
   updatedAt: number;
 };
 
+type AudioQueueItem = {
+  text: string;
+  onComplete?: () => void;
+};
+
 export default function Home() {
   return <HomeContent />;
 }
@@ -93,7 +98,7 @@ function HomeContent() {
   const [settings, setSettings] = useState<SettingsConf>({
     wakeWord: "Catherine",
     speechRate: 1,
-    handsFree: false,
+    handsFree: true,
     autoSpeak: true,
     wakeTimeout: 5,
     wakeMode: "tts",
@@ -109,7 +114,7 @@ function HomeContent() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [sessionSearch, setSessionSearch] = useState("");
   
-  const themeColor = "cyan";
+  const themeColor = "purple";
   const visMode = "bars";
 
   const [autoScroll, setAutoScroll] = useState(true);
@@ -244,6 +249,12 @@ function HomeContent() {
   const stateRef = useRef<State>("idle");
   const isRecognizingRef = useRef(false);
   const listeningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  const audioQueueRef = useRef<AudioQueueItem[]>([]);
+  const isPlayingRef = useRef(false);
+  const isStreamingRef = useRef(false);
+  const sentenceBufferRef = useRef("");
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     stateRef.current = state;
@@ -272,6 +283,11 @@ function HomeContent() {
   }
 
   function stopAudio() {
+    audioQueueRef.current = [];
+    isPlayingRef.current = false;
+    isStreamingRef.current = false;
+    abortControllerRef.current?.abort();
+
     if (audioRef.current) {
        audioRef.current.onended = null;
        audioRef.current.pause();
@@ -284,57 +300,93 @@ function HomeContent() {
     }
   }
 
+  const playNextInQueue = async () => {
+      if (audioQueueRef.current.length === 0) {
+          isPlayingRef.current = false;
+          if (!isStreamingRef.current) {
+              setState(settingsRef.current.handsFree ? "sleeping" : "idle");
+              if (settingsRef.current.handsFree) {
+                  setTimeout(safeStartRecognition, 100);
+              }
+          }
+          return;
+      }
+
+      isPlayingRef.current = true;
+      const item = audioQueueRef.current.shift()!;
+
+      // Fix 4: Clean markdown symbols before sending to TTS
+      const cleanText = item.text
+        .replace(/\*\*/g, "")
+        .replace(/\*/g, "")
+        .replace(/##/g, "")
+        .replace(/—/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      try {
+         try { recognitionRef.current?.stop(); } catch(e){} // Explicitly stop STT to prevent hearing itself
+         if (stateRef.current !== "speaking" && stateRef.current !== "processing") {
+             setState("processing");
+         }
+         
+         const url = `/api/tts?text=${encodeURIComponent(cleanText)}`;
+         const audioResponse = await fetch(url);
+
+         if (!isPlayingRef.current) return; // Discard if user interrupted during fetch
+         
+         // Fix 3: 429 and non-200 error handling
+         if (!audioResponse.ok) {
+             console.warn("TTS skipped, status:", audioResponse.status);
+             item.onComplete?.();
+             playNextInQueue();
+             return;
+         }
+         
+         const audioBlob = await audioResponse.blob();
+         const audioUrl = URL.createObjectURL(audioBlob);
+         
+         setState("speaking");
+         
+         if (!audioRef.current) audioRef.current = new Audio();
+         audioRef.current.src = audioUrl;
+         audioRef.current.playbackRate = settingsRef.current.speechRate;
+         audioRef.current.muted = isMuted;
+   
+         audioRef.current.onended = () => {
+             URL.revokeObjectURL(audioUrl);
+             item.onComplete?.();
+             playNextInQueue();
+         };
+   
+         audioRef.current.onerror = (e) => {
+             console.error("Audio playback error");
+             URL.revokeObjectURL(audioUrl);
+             item.onComplete?.();
+             playNextInQueue();
+         };
+
+          await audioRef.current.play();
+      } catch (e) {
+          console.error("TTS or Play error", e);
+          item.onComplete?.();
+          playNextInQueue();
+      }
+  };
+
   const playAudio = async (text: string, onComplete?: () => void) => {
     if (!settingsRef.current.autoSpeak) return onComplete?.();
-    try {
-       const ttsStart = performance.now();
-       setState("speaking");
-       try { recognitionRef.current?.stop(); } catch(e){} // Explicitly stop STT to prevent hearing itself
-       
-       const url = `/api/tts?text=${encodeURIComponent(text)}`;
+    
+    // Fix 2: Empty text guard
+    if (!text || text.trim().length < 2) {
+        onComplete?.();
+        return;
+    }
 
-       const audioResponse = await fetch(url);
-       console.log("TTS fetch status:", audioResponse.status);
-       console.log("TTS response content-type:", audioResponse.headers.get("content-type"));
+    audioQueueRef.current.push({ text, onComplete });
 
-       const audioBlob = await audioResponse.blob();
-       console.log("Blob type:", audioBlob.type);
-       console.log("Blob size:", audioBlob.size);
-
-       const audioUrl = URL.createObjectURL(audioBlob);
-       console.log("Object URL:", audioUrl);
-
-       if (!audioRef.current) {
-         audioRef.current = new Audio();
-       }
-
-       audioRef.current.src = audioUrl;
-       console.log("Audio element src set to:", audioRef.current.src);
-       audioRef.current.playbackRate = settingsRef.current.speechRate;
-       audioRef.current.muted = isMuted;
-       audioRef.current.onended = () => {
-          if (onComplete) {
-             onComplete();
-          } else {
-             setState(settingsRef.current.handsFree ? "sleeping" : "idle");
-             if (settingsRef.current.handsFree) {
-                setTimeout(safeStartRecognition, 100);
-             }
-          }
-       };
-       audioRef.current.onerror = (e) => {
-          const err = audioRef.current?.error;
-          console.error("TTS playback error");
-          console.error("MediaError code:", err?.code);
-          console.error("MediaError message:", err?.message);
-          console.error("MIME type of blob:", audioBlob.type);
-          setState("idle");
-       };
-       await audioRef.current.play();
-       setMetrics(m => ({ ...m, tts: performance.now() - ttsStart }));
-    } catch(e) {
-       console.error("TTS Error:", e);
-       setState("idle");
+    if (!isPlayingRef.current) {
+        playNextInQueue();
     }
   };
 
@@ -360,6 +412,7 @@ function HomeContent() {
 
   const sendCommand = async (cmd: string) => {
     if (!cmd.trim()) return;
+    stopAudio(); // Ensure everything is clear for interruption
     
     // Attempt saving to memory
     saveMessage(currentSessionId, "user", cmd);
@@ -388,11 +441,16 @@ function HomeContent() {
     }
 
     try {
+      abortControllerRef.current = new AbortController();
+      isStreamingRef.current = true;
+      sentenceBufferRef.current = "";
+
       const n8nStart = performance.now();
       const response = await fetch("/api/chat", {
          method: "POST",
          headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({ query: cmd, webhookUrl: WEBHOOK_URL })
+         body: JSON.stringify({ query: cmd, webhookUrl: WEBHOOK_URL }),
+         signal: abortControllerRef.current.signal
       });
 
       if (!response.ok) throw new Error("Webhook stream failed");
@@ -400,6 +458,7 @@ function HomeContent() {
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
       let replyText = "";
+      let previousReplyLength = 0;
       
       const replyMsgId = Date.now().toString() + "_r";
       const replyMsg: Message = {
@@ -461,6 +520,21 @@ function HomeContent() {
                 setMessages(prev => prev.map(m => m.id === replyMsgId ? { ...m, content: displayContent } : m));
             }
          }
+         
+         // Sentence Buffer Evaluation
+         if (replyText.length > previousReplyLength) {
+             const newText = replyText.slice(previousReplyLength);
+             previousReplyLength = replyText.length;
+
+             sentenceBufferRef.current += newText;
+             let match;
+             while ((match = sentenceBufferRef.current.match(/([.?!]+)(\s+|\n)/))) {
+                 const splitIndex = match.index! + match[1].length;
+                 const sentence = sentenceBufferRef.current.slice(0, splitIndex);
+                 sentenceBufferRef.current = sentenceBufferRef.current.slice(splitIndex).trimStart();
+                 if (sentence.trim().length > 0) playAudio(sentence.trim());
+             }
+         }
       }
       
       // Final extraction to ensure saved memory and TTS audio only use the extracted text
@@ -476,9 +550,20 @@ function HomeContent() {
       setMetrics(m => ({ ...m, n8n: totalN8n, total: Object.values(m).reduce((a,b)=>a+b,0) + totalN8n }));
       
       saveMessage(currentSessionId, "catherine", replyText);
-      await playAudio(replyText);
+      
+      isStreamingRef.current = false;
+      
+      // Flush remaining buffer text at the end of the stream
+      if (sentenceBufferRef.current.trim().length > 0) {
+          playAudio(sentenceBufferRef.current.trim());
+          sentenceBufferRef.current = "";
+      } else if (!isPlayingRef.current && audioQueueRef.current.length === 0) {
+          setState(settingsRef.current.handsFree ? "sleeping" : "idle");
+          if (settingsRef.current.handsFree) setTimeout(safeStartRecognition, 100);
+      }
       
     } catch (e: any) {
+      if (e.name === 'AbortError') return; // Ignore intentional interrupt aborts
       console.error(e);
       setCurrentTool(null);
       setError("Failed to connect to webhook.");
@@ -506,20 +591,24 @@ function HomeContent() {
     };
     
     recognition.onresult = (event: any) => {
-       const text = event.results[0][0].transcript.trim();
-       const lowerText = text.toLowerCase();
+       const rawTranscript = event.results[event.results.length - 1][0].transcript;
+       const transcript = rawTranscript.toLowerCase().trim();
        const wakeWord = settingsRef.current.wakeWord.toLowerCase();
+       const WAKE_WORDS = ["catherine", "katherine", "catherin", "hey catherine", "ok catherine", "kathryn", wakeWord];
 
-       if (lowerText === `${wakeWord} stop` || lowerText === "stop") {
+       if (transcript === `${wakeWord} stop` || transcript === "stop") {
            stopAudio();
            return;
        }
 
        if (stateRef.current === "sleeping") {
-           if (lowerText.startsWith(wakeWord) || lowerText.includes(wakeWord)) {
-               // Extract everything after the wake word (naturally ignores "Hey", "Ok", etc.)
-               let command = text.substring(lowerText.indexOf(wakeWord) + wakeWord.length).trim();
-               // Remove leading punctuation often added by STT (e.g. "Catherine, what's..." -> "what's...")
+           const isWakeWord = WAKE_WORDS.some(w => transcript.includes(w));
+           
+           if (isWakeWord) {
+               const matchedWord = WAKE_WORDS.find(w => transcript.includes(w)) || wakeWord;
+               // Extract everything after the wake word
+               let command = transcript.substring(transcript.indexOf(matchedWord) + matchedWord.length).trim();
+               // Remove leading punctuation often added by STT
                command = command.replace(/^[,.?!-]+\s*/, '');
                
                if (command.length > 0) {
@@ -545,7 +634,7 @@ function HomeContent() {
        }
 
        if (stateRef.current === "listening") {
-           if (text) sendCommand(text);
+           if (rawTranscript) sendCommand(rawTranscript.trim());
        }
     };
     
@@ -562,7 +651,7 @@ function HomeContent() {
        isRecognizingRef.current = false;
        if (settingsRef.current.handsFree) {
            if (stateRef.current === "sleeping" || stateRef.current === "listening") {
-               setTimeout(safeStartRecognition, 100);
+               setTimeout(safeStartRecognition, 50); // Immediate restart to keep loop alive
            }
        } else {
            if (stateRef.current === "listening") setState("idle");
@@ -601,7 +690,8 @@ function HomeContent() {
        source.connect(analyser);
        analyserRef.current = analyser;
      } catch (err: any) {
-       setError("Microphone access denied: " + err.message);
+       setError("Microphone access required for wake word detection");
+       throw err;
      }
   };
 
@@ -648,10 +738,13 @@ function HomeContent() {
   useEffect(() => {
     if (settings.handsFree) {
        setState("sleeping");
-       setTimeout(safeStartRecognition, 100);
+       startMicrophoneAnalysis().then(() => {
+         setTimeout(safeStartRecognition, 100);
+       }).catch(() => {});
     } else {
        setState("idle");
        try { recognitionRef.current?.stop(); } catch(e){}
+       stopMicrophone(); // Completely free the mic
     }
   }, [settings.handsFree, safeStartRecognition]);
 
@@ -805,10 +898,10 @@ function HomeContent() {
 
   const getStatusDisplay = () => {
       switch(state) {
-          case "sleeping": return { label: "SLEEPING", color: "bg-red-500/50 text-red-500" };
-          case "listening": return { label: "LISTENING", color: "bg-amber-400 text-amber-400" };
-          case "processing": return { label: "THINKING", color: "bg-cyan-400 text-cyan-400" };
-          case "speaking": return { label: "SPEAKING", color: "bg-green-400 text-green-400" };
+          case "sleeping": return { label: "LISTENING...", color: "bg-amber-500/50 text-amber-500" };
+          case "listening": return { label: "HEARING YOU...", color: "bg-green-400 text-green-400" };
+          case "processing": return { label: "THINKING...", color: "bg-cyan-400 text-cyan-400" };
+          case "speaking": return { label: "SPEAKING...", color: "bg-[var(--accent)] text-[var(--accent)]" };
           default: return { label: "IDLE", color: "bg-white/20 text-white/50" };
       }
   };
@@ -836,8 +929,8 @@ function HomeContent() {
       <div className={`absolute md:relative z-40 h-full bg-[var(--bg-surface)] border-r border-[var(--border-color)] transition-all duration-300 overflow-hidden flex flex-col shadow-2xl md:shadow-none ${isSidebarOpen ? "w-[280px] translate-x-0" : "w-0 -translate-x-full md:w-0 md:translate-x-0"}`}>
          <div className="p-4 flex items-center justify-between border-b border-[var(--border-color)] shrink-0">
             <span className="text-xs font-mono tracking-widest text-[var(--text-muted)] uppercase">Sessions</span>
-               <div className="flex items-center gap-2">
-                  <button onClick={handleClearAllSessions} aria-label="Delete All Sessions" className="text-red-400/50 hover:text-red-400 transition-colors" title="Delete All Sessions"><Trash2 className="w-4 h-4" /></button>
+               <div className="flex items-center gap-3">
+                  <button onClick={handleClearAllSessions} aria-label="Delete All Sessions" className="text-red-500/60 hover:text-red-500 transition-colors" title="Delete All Sessions"><Trash2 className="w-4 h-4" /></button>
                   <button onClick={() => setIsSidebarOpen(false)} aria-label="Close Sidebar" className="md:hidden text-[var(--text-muted)] hover:text-[var(--text-main)]"><X className="w-4 h-4" /></button>
                </div>
          </div>
@@ -861,7 +954,7 @@ function HomeContent() {
                      <MessageSquare className="w-3.5 h-3.5 shrink-0 opacity-50" />
                      <span className="text-sm truncate">{s.title}</span>
                   </div>
-                  <button onClick={(e) => handleDeleteSession(s.id, e)} aria-label="Delete Session" className="opacity-0 group-hover:opacity-100 text-red-400/50 hover:text-red-400 transition-opacity p-1"><Trash2 className="w-3.5 h-3.5" /></button>
+                  <button onClick={(e) => handleDeleteSession(s.id, e)} aria-label="Delete Session" className="opacity-0 group-hover:opacity-100 text-red-500/60 hover:text-red-500 transition-opacity p-1"><Trash2 className="w-3.5 h-3.5" /></button>
                </div>
             ))}
          </div>
@@ -870,8 +963,8 @@ function HomeContent() {
       {/* SETTINGS MODAL */}
       <AnimatePresence>
          {isSettingsOpen && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-               <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-md bg-[var(--bg-surface)] border border-[var(--border-color)] rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--overlay-bg)] backdrop-blur-sm p-4">
+               <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-md bg-[var(--bg-surface)] border border-[var(--border-color)] rounded-2xl shadow-[0_8px_32px_var(--shadow-color)] overflow-hidden flex flex-col">
                   <div className="p-5 flex items-center justify-between border-b border-[var(--border-color)] bg-[var(--bg-surface)]">
                      <h2 className="text-sm font-mono tracking-widest uppercase text-[var(--accent)]">System Config</h2>
                      <button onClick={() => setIsSettingsOpen(false)} aria-label="Close Settings" className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors"><X className="w-5 h-5" /></button>
@@ -966,7 +1059,7 @@ function HomeContent() {
              <button onClick={handleExport} aria-label="Export Chat" className="p-1.5 text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)]" title="Export Chat">
                 <Download className="w-4 h-4" />
              </button>
-             <button onClick={handleClearAll} aria-label="Clear Current Chat" className="p-1.5 text-red-400/50 hover:text-red-400 transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)]" title="Clear Current Chat">
+             <button onClick={handleClearAll} aria-label="Clear Current Chat" className="p-1.5 text-red-500/60 hover:text-red-500 transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)]" title="Clear Current Chat">
                 <Trash2 className="w-4 h-4" />
              </button>
           </div>
@@ -1018,7 +1111,7 @@ function HomeContent() {
                              ${
                                msg.role === "catherine"
                                  ? "text-[var(--text-main)] p-5 bg-[var(--bg-surface)] rounded-2xl rounded-tl-sm border border-[var(--border-color)] shadow-md"
-                                 : "text-[var(--bg-main)] py-3 px-5 bg-[var(--text-main)] rounded-2xl rounded-tr-sm shadow-md"
+                                 : "text-white py-3 px-5 bg-[var(--accent)] rounded-2xl rounded-tr-sm shadow-md"
                              }`}
                   >
                     {msg.role === "catherine" ? (
@@ -1042,7 +1135,7 @@ function HomeContent() {
                   <div className={`flex gap-4 mt-2 w-full items-center ${msg.role === "user" ? "justify-end flex-row-reverse" : "justify-start"}`}>
                     <div className="flex items-center gap-1">
                         {msg.role === "user" && (
-                            <button onClick={() => handleDeleteMessage(msg.id)} aria-label="Delete Message" className="opacity-0 group-hover:opacity-100 p-1.5 text-red-400/60 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all" title="Delete Message">
+                            <button onClick={() => handleDeleteMessage(msg.id)} aria-label="Delete Message" className="opacity-0 group-hover:opacity-100 p-1.5 text-red-500/60 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all" title="Delete Message">
                                 <Trash2 className="w-3.5 h-3.5" />
                             </button>
                         )}
@@ -1143,7 +1236,7 @@ function HomeContent() {
                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
                    animate={{ opacity: 1, y: 0, scale: 1 }}
                    exit={{ opacity: 0, y: -10, scale: 0.9 }}
-                   className="absolute -top-12 bg-[#050505]/95 backdrop-blur-2xl border border-[var(--accent-30)] px-4 py-1.5 rounded-full flex items-center gap-2 shadow-[0_0_20px_var(--accent-10)]"
+                   className="absolute -top-12 bg-[var(--bg-surface)]/95 backdrop-blur-2xl border border-[var(--accent-30)] px-4 py-1.5 rounded-full flex items-center gap-2 shadow-[0_0_20px_var(--accent-10)]"
                 >
                    <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--accent)]" />
                    <span className="text-[10px] font-mono tracking-[0.1em] text-[var(--accent)] uppercase">{currentTool}</span>
@@ -1151,7 +1244,7 @@ function HomeContent() {
              )}
           </AnimatePresence>
 
-          <div className="flex items-center gap-4 bg-[var(--bg-surface)] backdrop-blur-3xl border border-[var(--border-color)] p-3 rounded-[40px] shadow-2xl w-full relative transition-colors">
+          <div className="flex items-center gap-4 bg-[var(--bg-surface)] backdrop-blur-3xl border border-[var(--border-color)] p-3 rounded-[40px] shadow-[0_8px_32px_var(--shadow-color)] w-full relative transition-colors">
             
             <div className="hidden md:flex w-[100px] justify-center items-center px-2 shrink-0">
               <AnimatePresence mode="wait">
@@ -1161,7 +1254,7 @@ function HomeContent() {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
-                    className="text-red-400 text-[9px] font-mono tracking-widest max-w-[120px] overflow-hidden truncate"
+                    className="text-red-500 text-[9px] font-mono tracking-widest max-w-[120px] overflow-hidden truncate"
                     title={error}
                   >
                     {error.length > 15 ? error.slice(0, 15) + "..." : error}
@@ -1226,25 +1319,27 @@ function HomeContent() {
                <button type="submit" className="hidden"></button>
             </form>
 
-            <button
-              onClick={toggleRecording}
-              disabled={settings.handsFree}
-              aria-label={state === "listening" ? "Stop Recording" : "Start Recording"}
-              className={`relative flex items-center justify-center w-[64px] h-[64px] rounded-full shrink-0 focus:outline-none transition-all duration-300 shadow-[0_0_30px_var(--accent-20)]
-                    ${
-                      state === "listening"
-                        ? "bg-[#ef4444] shadow-[0_0_30px_rgba(239,68,68,0.5)] text-white scale-110"
-                        : "bg-[var(--accent)] hover:scale-105 active:scale-95 text-[#030303]"
-                    } ${hapticPulse ? "scale-90 brightness-150" : ""}`}
-            >
-              {state === "idle" || state === "speaking" ? (
-                <Mic className="w-6 h-6" strokeWidth={2.5} />
-              ) : state === "listening" ? (
-                <Square className="w-5 h-5 outline-none" fill="currentColor" />
-              ) : (
-                <Loader2 className="w-6 h-6 animate-spin" />
-              )}
-            </button>
+            {!settings.handsFree && (
+               <button
+                 onClick={toggleRecording}
+                 disabled={settings.handsFree}
+                 aria-label={state === "listening" ? "Stop Recording" : "Start Recording"}
+                 className={`relative flex items-center justify-center w-[64px] h-[64px] rounded-full shrink-0 focus:outline-none transition-all duration-300 shadow-[0_0_30px_var(--accent-20)]
+                       ${
+                         state === "listening"
+                           ? "bg-[#ef4444] shadow-[0_0_30px_rgba(239,68,68,0.5)] text-white scale-110"
+                           : "bg-[var(--accent)] hover:scale-105 active:scale-95 text-white"
+                       } ${hapticPulse ? "scale-90 brightness-150" : ""}`}
+               >
+                 {state === "idle" || state === "speaking" ? (
+                   <Mic className="w-6 h-6" strokeWidth={2.5} />
+                 ) : state === "listening" ? (
+                   <Square className="w-5 h-5 outline-none" fill="currentColor" />
+                 ) : (
+                   <Loader2 className="w-6 h-6 animate-spin" />
+                 )}
+               </button>
+            )}
             
           </div>
           <div className="flex items-center gap-1.5 opacity-60">
@@ -1254,7 +1349,7 @@ function HomeContent() {
              </span>
           </div>
           <div className="flex items-center gap-1.5 opacity-60 ml-3">
-             <div className={`w-1.5 h-1.5 rounded-full ${state !== 'idle' ? 'bg-cyan-400 shadow-[0_0_5px_#22d3ee]' : 'bg-red-500 shadow-[0_0_5px_#ef4444]'}`} />
+             <div className={`w-1.5 h-1.5 rounded-full ${state !== 'idle' ? 'bg-[var(--accent)] shadow-[0_0_5px_var(--accent-50)]' : 'bg-red-500 shadow-[0_0_5px_#ef4444]'}`} />
              <span className="text-[8px] font-mono tracking-widest uppercase text-[var(--text-muted)]">
                {state !== 'idle' ? 'CORE_ACTIVE' : 'CORE_IDLE'}
              </span>
@@ -1274,6 +1369,8 @@ function HomeContent() {
           --border-color: rgba(0, 0, 0, 0.1);
           --scrollbar-bg: transparent;
           --scrollbar-thumb: rgba(0, 0, 0, 0.2);
+          --overlay-bg: rgba(15, 23, 42, 0.4);
+          --shadow-color: rgba(0, 0, 0, 0.05);
           color-scheme: light;
         }
         .dark {
@@ -1285,6 +1382,8 @@ function HomeContent() {
           --border-color: rgba(255, 255, 255, 0.1);
           --scrollbar-bg: transparent;
           --scrollbar-thumb: rgba(255, 255, 255, 0.1);
+          --overlay-bg: rgba(0, 0, 0, 0.8);
+          --shadow-color: rgba(0, 0, 0, 0.5);
           color-scheme: dark;
         }
         

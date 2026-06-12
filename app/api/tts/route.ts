@@ -1,24 +1,47 @@
 import { NextRequest, NextResponse } from "next/server";
 
-function pcmToWav(pcmBuffer: Buffer, sampleRate: number = 24000, channels: number = 1, bitDepth: number = 16): Buffer {
-  const dataLength = pcmBuffer.length;
-  const header = Buffer.alloc(44);
+export const maxDuration = 30;
+export const runtime = "edge";
 
-  header.write("RIFF", 0);
-  header.writeUInt32LE(36 + dataLength, 4);
-  header.write("WAVE", 8);
-  header.write("fmt ", 12);
-  header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(1, 20);
-  header.writeUInt16LE(channels, 22);
-  header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(sampleRate * channels * (bitDepth / 8), 28);
-  header.writeUInt16LE(channels * (bitDepth / 8), 32);
-  header.writeUInt16LE(bitDepth, 34);
-  header.write("data", 36);
-  header.writeUInt32LE(dataLength, 40);
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
 
-  return Buffer.concat([header, pcmBuffer]);
+function pcmToWav(pcmData: Uint8Array, sampleRate: number = 24000, channels: number = 1, bitDepth: number = 16): Uint8Array {
+  const dataLength = pcmData.length;
+  const buffer = new ArrayBuffer(44 + dataLength);
+  const view = new DataView(buffer);
+
+  const writeString = (offset: number, string: string) => {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  };
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + dataLength, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * channels * (bitDepth / 8), true);
+  view.setUint16(32, channels * (bitDepth / 8), true);
+  view.setUint16(34, bitDepth, true);
+  writeString(36, "data");
+  view.setUint32(40, dataLength, true);
+
+  const wavArray = new Uint8Array(buffer);
+  wavArray.set(pcmData, 44);
+
+  return wavArray;
 }
 
 export async function GET(req: NextRequest) {
@@ -36,7 +59,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite-preview-tts:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -81,13 +104,13 @@ export async function GET(req: NextRequest) {
     }
 
     const base64Audio = inlineData.data;
-    const pcmBuffer = Buffer.from(base64Audio, "base64");
-    const wavBuffer = pcmToWav(pcmBuffer);
+    const pcmArray = base64ToUint8Array(base64Audio);
+    const wavArray = pcmToWav(pcmArray);
 
-    return new NextResponse(wavBuffer, {
+    return new NextResponse(wavArray, {
       headers: {
         "Content-Type": "audio/wav",
-        "Content-Length": wavBuffer.length.toString(),
+        "Content-Length": wavArray.length.toString(),
       },
     });
   } catch (error: any) {
