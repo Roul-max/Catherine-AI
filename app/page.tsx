@@ -269,9 +269,11 @@ function HomeContent() {
     return () => clearInterval(int);
   }, [state]);
 
-  useEffect(() => {
-    isHandsFreeRef.current = isHandsFree;
-  }, [isHandsFree]);
+  const safeStartRecognition = useCallback(() => {
+    if (!isRecognizingRef.current && recognitionRef.current) {
+      try { recognitionRef.current.start(); } catch(e) {}
+    }
+  }, []);
 
   function stopMicrophone() {
      if (microphoneStreamRef.current) {
