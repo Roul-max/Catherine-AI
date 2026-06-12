@@ -59,7 +59,6 @@ type Metrics = {
 
 type SettingsConf = {
   wakeWord: string;
-  voiceId: string;
   speechRate: number;
   handsFree: boolean;
   autoSpeak: boolean;
@@ -93,7 +92,6 @@ function HomeContent() {
 
   const [settings, setSettings] = useState<SettingsConf>({
     wakeWord: "Catherine",
-    voiceId: process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID || "EXAVITQu4vr4xnSDxMaL",
     speechRate: 1,
     handsFree: false,
     autoSpeak: true,
@@ -237,15 +235,6 @@ function HomeContent() {
     lime: "132, 204, 22"
   };
 
-  const voices = [
-    { id: "pqHfZKP75CvOlQylNhV4", name: "Default (Bill)" },
-    { id: "pNInz6obpgDQGcFmaJcg", name: "Adam" },
-    { id: "ErXwobaYiN019PkySvjV", name: "Antoni" },
-    { id: "EXAVITQu4vr4xnSDxMaL", name: "Bella" },
-    { id: "21m00Tcm4TlvDq8ikWAM", name: "Rachel" },
-    { id: "AZnzlk1XvdvUeBnXmlld", name: "Domi" },
-  ];
-
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const recognitionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -306,7 +295,7 @@ function HomeContent() {
           audioRef.current = new Audio();
        }
        // Using the proxy endpoint to avoid CORS and pass headers safely while natively streaming
-       const url = `/api/tts?text=${encodeURIComponent(text)}&voiceId=${settingsRef.current.voiceId}`;
+       const url = `/api/tts?text=${encodeURIComponent(text)}`;
        audioRef.current.src = url;
        audioRef.current.playbackRate = settingsRef.current.speechRate;
        audioRef.current.muted = isMuted;
@@ -887,11 +876,8 @@ function HomeContent() {
                      {/* Voice & Audio */}
                      <section className="flex flex-col gap-4">
                         <h3 className="text-[10px] font-mono tracking-widest text-[var(--accent)] uppercase flex items-center gap-2"><Volume2 className="w-3 h-3" /> Voice & Audio</h3>
-                        <div className="flex flex-col gap-2">
-                           <label className="text-xs font-mono text-[var(--text-muted)] uppercase tracking-wider">ElevenLabs Voice</label>
-                           <select value={settings.voiceId} onChange={(e) => setSettings({...settings, voiceId: e.target.value})} className="bg-[var(--bg-surface-hover)] border border-[var(--border-color)] rounded-lg p-2.5 text-sm outline-none focus:border-[var(--accent-50)] text-[var(--text-main)] transition-colors">
-                              {voices.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-                           </select>
+                        <div className="flex flex-col gap-2 p-3 bg-[var(--bg-surface-hover)] border border-[var(--border-color)] rounded-lg">
+                           <span className="text-sm text-[var(--text-main)]">Voice: Google Neural2 (en-US-Neural2-F)</span>
                         </div>
                         <div className="flex flex-col gap-2">
                            <label className="flex items-center justify-between text-xs font-mono text-[var(--text-muted)] uppercase tracking-wider">

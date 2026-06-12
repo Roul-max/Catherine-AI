@@ -3,10 +3,9 @@ import { NextRequest, NextResponse } from "next/server";
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const text = searchParams.get("text");
-  const voiceId = searchParams.get("voiceId") || "pqHfZKP75CvOlQylNhV4";
-  const apiKey = process.env.ELEVENLABS_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
 
-  if (!apiKey || apiKey === "YOUR_ELEVENLABS_API_KEY") {
+  if (!apiKey || apiKey === "your_gemini_api_key_here") {
     return NextResponse.json({ error: "No API key configured on server." }, { status: 400 });
   }
 
@@ -15,26 +14,30 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    console.log("ELEVENLABS_API_KEY exists:", !!apiKey);
-    console.log("ELEVENLABS_API_KEY prefix:", apiKey?.slice(0, 6));
-    console.log("voiceId:", voiceId);
-    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`, {
-      method: "POST",
-      headers: {
-        "xi-api-key": apiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        text,
-        model_id: "eleven_flash_v2_5",
-      }),
-    });
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: text }] }],
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: "Kore" }
+              }
+            }
+          }
+        })
+      }
+    );
 
     if (!response.ok) {
       const errorText = await response.text();
 
-      console.log("ELEVENLABS STATUS:", response.status);
-      console.log("ELEVENLABS ERROR:", errorText);
+      console.log("GEMINI TTS STATUS:", response.status);
+      console.log("GEMINI TTS ERROR:", errorText);
 
       return NextResponse.json(
         { error: errorText },
@@ -42,10 +45,14 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    return new NextResponse(response.body, {
+    const data = await response.json();
+    const base64Audio = data.candidates[0].content.parts[0].inlineData.data;
+    const audioBuffer = Buffer.from(base64Audio, "base64");
+
+    return new NextResponse(audioBuffer, {
       headers: {
-        "Content-Type": "audio/mpeg",
-        "Transfer-Encoding": "chunked",
+        "Content-Type": "audio/mp3",
+        "Content-Length": audioBuffer.length.toString(),
       },
     });
   } catch (error: any) {
