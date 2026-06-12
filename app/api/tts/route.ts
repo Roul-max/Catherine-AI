@@ -1,5 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 
+function pcmToWav(pcmBuffer: Buffer, sampleRate: number = 24000, channels: number = 1, bitDepth: number = 16): Buffer {
+  const dataLength = pcmBuffer.length;
+  const header = Buffer.alloc(44);
+
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + dataLength, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * channels * (bitDepth / 8), 28);
+  header.writeUInt16LE(channels * (bitDepth / 8), 32);
+  header.writeUInt16LE(bitDepth, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(dataLength, 40);
+
+  return Buffer.concat([header, pcmBuffer]);
+}
+
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const text = searchParams.get("text");
@@ -60,12 +81,13 @@ export async function GET(req: NextRequest) {
     }
 
     const base64Audio = inlineData.data;
-    const audioBuffer = Buffer.from(base64Audio, "base64");
+    const pcmBuffer = Buffer.from(base64Audio, "base64");
+    const wavBuffer = pcmToWav(pcmBuffer);
 
-    return new NextResponse(audioBuffer, {
+    return new NextResponse(wavBuffer, {
       headers: {
-        "Content-Type": inlineData.mimeType || "audio/mpeg",
-        "Content-Length": audioBuffer.length.toString(),
+        "Content-Type": "audio/wav",
+        "Content-Length": wavBuffer.length.toString(),
       },
     });
   } catch (error: any) {
